@@ -1,7 +1,7 @@
 using System.IO;
 using System.Text.Json;
 
-namespace RetroArcade;
+namespace Game.Core;
 
 public static class HighScoreStore
 {

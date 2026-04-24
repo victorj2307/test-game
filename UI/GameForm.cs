@@ -1,10 +1,11 @@
+using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.Windows.Forms;
+using Game.Core;
 
-namespace RetroArcade;
+namespace Game.UI;
 
-/// <summary>Host window: System.Windows.Forms.Timer for the game loop, keyboard input, and GDI+ rendering in OnPaint.</summary>
+/// <summary>Host window: timer-driven sim, Stopwatch per-tick delta, keyboard input, GDI+ in OnPaint.</summary>
 public sealed class GameForm : Form
 {
     private const int StartButtonWidth = 200;
@@ -12,7 +13,11 @@ public sealed class GameForm : Form
     private const int StartButtonBottomMargin = 18;
     private const int GameStatusBarHeight = 30;
 
-    private readonly System.Windows.Forms.Timer _gameTimer = new() { Interval = 16 };
+    /// <summary>~60 Hz; WM_TIMER coalesces slightly — <see cref="_frameWatch"/> supplies actual delta to <c>Update</c>.</summary>
+    private const int GameTimerIntervalMs = 16;
+
+    private readonly System.Windows.Forms.Timer _gameTimer = new() { Interval = GameTimerIntervalMs };
+    private readonly Stopwatch _frameWatch = new();
     private readonly GameManager _game = new();
     private readonly Button _btnStart = new();
     private readonly Panel _statusBar = new();
@@ -20,6 +25,7 @@ public sealed class GameForm : Form
     private readonly HashSet<Keys> _keysDown = new();
     private long _lastFpsTimeMs;
     private int _framesThisSecond;
+    private bool _runGameLoop;
 
     public GameForm()
     {
@@ -52,7 +58,7 @@ public sealed class GameForm : Form
         _btnStart.Size = new Size(StartButtonWidth, StartButtonHeight);
         _btnStart.Font = new Font("Segoe UI", 10.5f, FontStyle.Bold, GraphicsUnit.Point);
         _btnStart.UseVisualStyleBackColor = false;
-        _btnStart.Click += (_, _) => StartGame();
+        _btnStart.Click += OnStartOrContinueClick;
         _btnStart.Cursor = Cursors.Hand;
         _btnStart.TabStop = true;
         _btnStart.FlatStyle = FlatStyle.Flat;
@@ -76,11 +82,19 @@ public sealed class GameForm : Form
         _game.EnterAttractMode(ClientSize.Width, GetPlayHeight());
         _lastFpsTimeMs = Environment.TickCount64;
         UpdateStatusLine();
-        _gameTimer.Tick += (_, _) => GameLoopTick();
+        _gameTimer.Tick += GameLoopTick;
         KeyDown += OnKeyDown;
         KeyUp += OnKeyUp;
         ClientSizeChanged += OnClientOrSize;
         Shown += (_, _) => Invalidate();
+        FormClosed += OnFormClosed;
+    }
+
+    private void OnFormClosed(object? sender, FormClosedEventArgs e)
+    {
+        _gameTimer.Stop();
+        _gameTimer.Tick -= GameLoopTick;
+        _gameTimer.Dispose();
     }
 
     private int GetPlayHeight() => Math.Max(32, ClientSize.Height - _statusBar.Height);
@@ -94,11 +108,29 @@ public sealed class GameForm : Form
     private void UpdateStatusLine()
     {
         if (_game.IsGameOver)
+#if DEBUG
+            _statusLine.Text = "Click Start. F1: debug · F2: dev mode (easier test).";
+#else
             _statusLine.Text = "Click Start. F1: debug overlay (hitboxes, FPS, counts).";
+#endif
+        else if (_game.IsLifeLost)
+            _statusLine.Text = "Life lost. Press Enter/Space or click Continue.";
+        else if (_game.IsPaused)
+            _statusLine.Text = "Paused. Press ESC to continue.";
         else if (_game.IsPlaying)
-            _statusLine.Text = "Move: arrows or A/D (grid steps, ~75ms repeat) · Hold Space: fire · F1: debug. Combo builds on quick clears.";
+#if DEBUG
+            _statusLine.Text = _game.IsDevMode
+                ? "DEV: F2 off · 1–6 power-ups · F1 debug · arrows/Space/ESC"
+                : "Move: arrows or A/D · Space fire · ESC pause · F1 debug · F2 dev mode.";
+#else
+            _statusLine.Text = "Move: arrows or A/D · Space fire · ESC pause · F1 debug.";
+#endif
         else
-            _statusLine.Text = "Procedural bleeps (no files). F1: debug overlay.";
+#if DEBUG
+            _statusLine.Text = "F1: debug overlay · F2: dev mode (before/during play).";
+#else
+            _statusLine.Text = "F1: debug overlay (hitboxes, FPS, counts).";
+#endif
     }
 
     private void UpdateStartButtonLayout()
@@ -113,29 +145,92 @@ public sealed class GameForm : Form
     {
         _btnStart.Visible = false;
         _game.StartNewGame(ClientSize.Width, GetPlayHeight());
-        _gameTimer.Start();
+        _runGameLoop = true;
+        _frameWatch.Restart();
         _framesThisSecond = 0;
         _lastFpsTimeMs = Environment.TickCount64;
+        _gameTimer.Start();
         UpdateStatusLine();
         Focus();
         Invalidate();
     }
 
+    private void ContinueLife()
+    {
+        _game.ContinueAfterLifeLost(ClientSize.Width, GetPlayHeight());
+        _btnStart.Visible = false;
+        UpdateStatusLine();
+        Focus();
+        Invalidate();
+    }
+
+    private void OnStartOrContinueClick(object? sender, EventArgs e)
+    {
+        if (_game.IsLifeLost) ContinueLife();
+        else StartGame();
+    }
+
     private void OnKeyDown(object? sender, KeyEventArgs e)
     {
+        bool wasDown = !_keysDown.Add(e.KeyCode);
         if (e.KeyCode is Keys.F1)
         {
             _game.ToggleDebug();
             e.Handled = true;
             return;
         }
-        _keysDown.Add(e.KeyCode);
+#if DEBUG
+        if (e.KeyCode is Keys.F2)
+        {
+            _game.ToggleDevMode();
+            UpdateStatusLine();
+            e.Handled = true;
+            return;
+        }
+        int? devDigit = e.KeyCode switch
+        {
+            Keys.D1 or Keys.NumPad1 => 1,
+            Keys.D2 or Keys.NumPad2 => 2,
+            Keys.D3 or Keys.NumPad3 => 3,
+            Keys.D4 or Keys.NumPad4 => 4,
+            Keys.D5 or Keys.NumPad5 => 5,
+            Keys.D6 or Keys.NumPad6 => 6,
+            _ => null
+        };
+        if (devDigit is int d && _game.IsDevMode && _game.IsPlaying && !_game.IsPaused && !_game.IsLifeLost)
+        {
+            _game.TryDevActivatePowerUpDigit(d);
+            e.Handled = true;
+            return;
+        }
+#endif
+        if (e.KeyCode is Keys.Escape && !wasDown)
+        {
+            _game.TogglePause();
+            _frameWatch.Restart();
+            UpdateStatusLine();
+            e.Handled = true;
+            return;
+        }
+        if (_game.IsLifeLost && (e.KeyCode is Keys.Enter or Keys.Space))
+        {
+            ContinueLife();
+            e.Handled = true;
+            return;
+        }
     }
 
     private void OnKeyUp(object? sender, KeyEventArgs e) => _keysDown.Remove(e.KeyCode);
 
-    private void GameLoopTick()
+    private void GameLoopTick(object? sender, EventArgs e)
     {
+        if (!_runGameLoop) return;
+
+        float dt = (float)_frameWatch.Elapsed.TotalSeconds;
+        _frameWatch.Restart();
+        if (dt < 1f / 500f) dt = 1f / 500f;
+        if (dt > 0.25f) dt = 0.25f;
+
         long now = Environment.TickCount64;
         _framesThisSecond++;
         if (now - _lastFpsTimeMs >= 1000)
@@ -153,15 +248,25 @@ public sealed class GameForm : Form
             h,
             _keysDown.Contains(Keys.Left) || _keysDown.Contains(Keys.A),
             _keysDown.Contains(Keys.Right) || _keysDown.Contains(Keys.D),
-            wantFire);
+            wantFire,
+            dt);
+        if (_game.IsLifeLost)
+        {
+            _btnStart.Visible = true;
+            _btnStart.Text = "Continue";
+            UpdateStartButtonLayout();
+            UpdateStatusLine();
+        }
         if (_game.IsGameOver)
         {
             _gameTimer.Stop();
+            _runGameLoop = false;
             _btnStart.Visible = true;
             _btnStart.Text = "Play again";
             UpdateStartButtonLayout();
             UpdateStatusLine();
         }
+
         Invalidate();
     }
 
@@ -171,7 +276,8 @@ public sealed class GameForm : Form
         int w = ClientSize.Width;
         int h = GetPlayHeight();
         if (h <= 0) return;
-        e.Graphics.Clip = new Region(new Rectangle(0, 0, w, h));
+        var playRect = new Rectangle(0, 0, w, h);
+        e.Graphics.SetClip(playRect);
         e.Graphics.Clear(BackColor);
         _game.Draw(e.Graphics, w, h, Font);
         e.Graphics.ResetClip();

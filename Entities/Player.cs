@@ -1,6 +1,6 @@
 using System.Drawing;
 
-namespace RetroArcade;
+namespace Game.Entities;
 
 /// <summary>
 /// Cannon with discrete horizontal steps (half bar width), snapped to a grid for alignment with bars.
@@ -41,9 +41,6 @@ public sealed class Player
         return new Rectangle(X + (Width - w) / 2, Y - 2, w, 2);
     }
 
-    /// <summary>
-    /// Keeps X in [0, clientWidth - Width] and snaps down to a multiple of <paramref name="stepPixels"/> (same as bar alignment).
-    /// </summary>
     public void ClampAndSnapToGrid(int clientWidth, int stepPixels)
     {
         if (stepPixels < 1) stepPixels = 1;
@@ -53,7 +50,6 @@ public sealed class Player
         _x = Math.Min(_x / stepPixels * stepPixels, gridMax);
     }
 
-    /// <summary>Moves by one step in -1 (left) or +1 (right); direction 0 is a no-op.</summary>
     public void TryStep(int direction, int clientWidth, int stepPixels)
     {
         if (direction is not (-1) and not 1) return;

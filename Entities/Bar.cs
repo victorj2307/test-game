@@ -1,6 +1,6 @@
 using System.Drawing;
 
-namespace RetroArcade;
+namespace Game.Entities;
 
 /// <summary>
 /// Falling vertical bar. Shrink is height loss with fixed top; <see cref="InitialHeight"/> drives health color.
@@ -12,18 +12,19 @@ public sealed class Bar
     public int Y { get; private set; }
     public int Width { get; }
     public int Height { get; private set; }
-    /// <summary>Rounded current fall speed in px/frame (for debug / consistency).</summary>
     public int Speed => Math.Max(1, (int)MathF.Round(_currentSpeed));
 
     public BarType Type { get; }
     public int InitialHeight { get; }
     public int HitFlashTimer { get; private set; }
 
+    /// <summary>When true, hit flash uses magenta tint (piercing shot).</summary>
+    public bool PierceFlash { get; private set; }
+
     private readonly float _speedScale;
     private float _currentSpeed;
     private float _targetSpeed;
 
-    /// <summary>How fast <see cref="_currentSpeed"/> approaches <see cref="_targetSpeed"/> each frame (0–1).</summary>
     private const float SpeedLerpFactor = 0.14f;
 
     public Bar(int x, int y, int width, int height, BarType type, int initialHeight, float speedScale, int globalBarSpeed)
@@ -38,7 +39,6 @@ public sealed class Bar
         SetMoveSpeed(globalBarSpeed);
     }
 
-    /// <summary>Snap current and target to the same pixel speed (e.g. new spawn).</summary>
     public void SetMoveSpeed(int globalSpeed)
     {
         float t = TargetPixelsFromGlobal(globalSpeed);
@@ -46,14 +46,12 @@ public sealed class Bar
         _targetSpeed = t;
     }
 
-    /// <summary>Only updates the interpolation target (when global difficulty rises/falls).</summary>
     public void SetTargetMoveSpeed(int globalSpeed) =>
         _targetSpeed = TargetPixelsFromGlobal(globalSpeed);
 
     private float TargetPixelsFromGlobal(int globalSpeed) =>
         Math.Max(1f, (int)(globalSpeed * _speedScale + 0.5f));
 
-    /// <summary>Call once per frame before <see cref="Move"/>.</summary>
     public void TickSpeedTowardTarget()
     {
         float d = _targetSpeed - _currentSpeed;
@@ -67,12 +65,23 @@ public sealed class Bar
 
     public void TickEffect()
     {
-        if (HitFlashTimer > 0) HitFlashTimer--;
+        if (HitFlashTimer > 0)
+        {
+            HitFlashTimer--;
+            if (HitFlashTimer == 0) PierceFlash = false;
+        }
     }
 
     public void RegisterHit()
     {
         HitFlashTimer = 6;
+        PierceFlash = false;
+    }
+
+    public void RegisterPierceHit()
+    {
+        HitFlashTimer = 14;
+        PierceFlash = true;
     }
 
     public void ApplyDamage(int amount)

@@ -1,4 +1,4 @@
-namespace RetroArcade;
+namespace Game.Entities;
 
 /// <summary>Enemy bar archetypes: different fall speed, height, and (optional) tint.</summary>
 public enum BarType

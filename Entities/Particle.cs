@@ -1,6 +1,6 @@
 using System.Drawing;
 
-namespace RetroArcade;
+namespace Game.Entities;
 
 /// <summary>Small debris spark; simple linear motion + light gravity, fixed lifetime.</summary>
 public sealed class Particle
@@ -25,7 +25,6 @@ public sealed class Particle
     public void Update()
     {
         if (Lifetime <= 0) return;
-        // Light gravity: pixels / frame^2
         const float gravity = 0.22f;
         Vy += gravity;
         X += Vx;

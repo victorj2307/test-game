@@ -1,0 +1,54 @@
+using System.Drawing;
+
+namespace Game.Entities;
+
+/// <summary>
+/// Straight upward shot. Top-left (X, Y) with Y growing downward in WinForms; many may be active.
+/// </summary>
+public sealed class Bullet
+{
+    private float _x;
+    private float _y;
+    public int X => (int)MathF.Round(_x);
+    public int Y => (int)MathF.Round(_y);
+    public int Width { get; }
+    public int Height { get; }
+    public int Speed { get; }
+    public float DriftX { get; }
+    public int RemainingPierces { get; private set; }
+
+    /// <summary>True if spawned during Piercing Shot (wider purple shot, distinct SFX).</summary>
+    public bool IsPiercingVisual { get; }
+
+    public bool IsActive { get; private set; } = true;
+
+    public Bullet(int x, int y, int width, int height, int speed, float driftX = 0f, int pierceCount = 0)
+    {
+        _x = x;
+        _y = y;
+        Width = width;
+        Height = height;
+        Speed = speed;
+        DriftX = driftX;
+        RemainingPierces = Math.Max(0, pierceCount);
+        IsPiercingVisual = pierceCount > 0;
+    }
+
+    public void Deactivate() => IsActive = false;
+
+    public void Update()
+    {
+        if (!IsActive) return;
+        _x += DriftX;
+        _y -= Speed;
+    }
+
+    public bool ConsumePierce()
+    {
+        if (RemainingPierces <= 0) return false;
+        RemainingPierces--;
+        return true;
+    }
+
+    public Rectangle GetBounds() => new(X, Y, Width, Height);
+}

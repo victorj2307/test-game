@@ -1,4 +1,6 @@
-namespace RetroArcade;
+using Game.UI;
+
+namespace Game;
 
 internal static class Program
 {

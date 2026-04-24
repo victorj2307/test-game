@@ -1,6 +1,8 @@
 using System.Drawing;
+using Game.Core;
+using Game.Entities;
 
-namespace RetroArcade;
+namespace Game.Systems;
 
 /// <summary>Bar placement, cluster/lane patterns, and max-on-screen cap.</summary>
 public sealed class SpawnSystem
@@ -8,10 +10,15 @@ public sealed class SpawnSystem
     private const int MinBarHeight = 60;
     private const int MaxBarHeight = 200;
     public const int BarWidth = 24;
-    private const int MaxBarSpawnPlaceAttempts = 50;
+    private const int MaxBarSpawnPlaceAttempts = 10;
+    private const int SpawnHorizontalPadding = 8;
     private const int BarSpawnRetryFramesWhenNoFit = 8;
     private const float ClusterChance = 0.15f;
     private const float LaneChance = 0.10f;
+    private const double PowerUpDropChance = 0.10;
+    private const int ForcePowerUpAfterBars = 12;
+    private const double DevPowerUpDropChance = 0.55;
+    private const int DevForcePowerUpAfterBars = 3;
 
     private readonly GameState _state;
     private readonly EntityManager _entities;
@@ -31,9 +38,9 @@ public sealed class SpawnSystem
         int w = Math.Min(BarWidth, clientWidth);
         if (w < 1) w = 1;
 
-        if (_entities.Bars.Count >= _state.MaxBarsOnScreen)
+        if (_entities.Bars.Count >= _state.EffectiveMaxBarsOnScreen)
         {
-            _state.SpawnCountdown = _state.SpawnIntervalFrames;
+            _state.SpawnCountdown = _state.EffectiveSpawnIntervalFrames;
             return;
         }
 
@@ -58,7 +65,7 @@ public sealed class SpawnSystem
             if (!usedLane && _random.NextDouble() < LaneChance)
                 _state.NextSpawnLaneX = Math.Clamp(placedX, 0, clientWidth - w);
 
-            _state.SpawnCountdown = _state.SpawnIntervalFrames;
+            _state.SpawnCountdown = _state.EffectiveSpawnIntervalFrames;
             return;
         }
 
@@ -137,18 +144,44 @@ public sealed class SpawnSystem
 
     private bool TryCreateBarAt(int x, int w, int h, BarType type, int clientWidth, bool setCountdown)
     {
-        if (_entities.Bars.Count >= _state.MaxBarsOnScreen) return false;
+        if (_entities.Bars.Count >= _state.EffectiveMaxBarsOnScreen) return false;
 
         h = Math.Clamp(h, 20, 300);
         w = Math.Min(w, clientWidth);
         if (w < 1) return false;
         x = Math.Clamp(x, 0, Math.Max(0, clientWidth - w));
+        if (HasHorizontalSpacingConflict(x, w, _entities.Bars)) return false;
         var candidate = new Rectangle(x, 0, w, h);
         if (BarBoundsOverlapAnyExisting(candidate, _entities.Bars)) return false;
         float sc = TypeSpeedScale(type);
-        _entities.Bars.Add(new Bar(x, 0, w, h, type, h, sc, _state.BarSpeed));
-        if (setCountdown) _state.SpawnCountdown = _state.SpawnIntervalFrames;
+        _entities.Bars.Add(new Bar(x, 0, w, h, type, h, sc, _state.GetEffectiveBarSpeed()));
+        if (setCountdown) _state.SpawnCountdown = _state.EffectiveSpawnIntervalFrames;
         return true;
+    }
+
+    public void TrySpawnPowerUpAt(Rectangle sourceBounds)
+    {
+        _state.RegisterBarDestroyedForPowerUpRoll();
+        int forceAfter = _state.IsDevMode ? DevForcePowerUpAfterBars : ForcePowerUpAfterBars;
+        double dropChance = _state.IsDevMode ? DevPowerUpDropChance : PowerUpDropChance;
+        bool forceDrop = _state.BarsSinceLastPowerUpDrop >= forceAfter;
+        if (!forceDrop && _random.NextDouble() > dropChance) return;
+        const int size = 12;
+        int x = sourceBounds.X + (sourceBounds.Width - size) / 2;
+        int y = sourceBounds.Y + Math.Max(0, sourceBounds.Height / 3);
+        var type = (PowerUpType)_random.Next(0, Enum.GetValues<PowerUpType>().Length);
+        _entities.PowerUps.Add(new PowerUp(x, y, size, 2, type));
+        _state.RegisterPowerUpDrop();
+    }
+
+    private static bool HasHorizontalSpacingConflict(int candidateX, int candidateWidth, List<Bar> bars)
+    {
+        int minDistance = candidateWidth + SpawnHorizontalPadding;
+        foreach (var bar in bars)
+        {
+            if (Math.Abs(candidateX - bar.X) < minDistance) return true;
+        }
+        return false;
     }
 
     private static bool BarBoundsOverlapAnyExisting(Rectangle candidate, List<Bar> bars)

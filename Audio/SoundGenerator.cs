@@ -1,10 +1,10 @@
 using System.Media;
 using System.Text;
 
-namespace RetroArcade;
+namespace Game.Audio;
 
 /// <summary>
-/// Builds short PCM sine tones in memory and plays them with <see cref="SoundPlayer"/> (async <see cref="SoundPlayer.Play"/>).
+/// Builds short PCM sine tones in memory and plays them with <see cref="SoundPlayer"/>.
 /// A small pool of players avoids blocking the UI thread and lets one-shots overlap.
 /// </summary>
 public static class SoundGenerator
@@ -13,12 +13,9 @@ public static class SoundGenerator
     private const int BitsPerSample = 16;
     private const int Channels = 1;
     private const int PoolSize = 12;
-
-    /// <summary>Amplitude scale (0..1) before clipping guard; keep below 1 to reduce harshness.</summary>
     private const double MasterGain = 0.35;
 
     private static readonly SoundPlayer[] Players = new SoundPlayer[PoolSize];
-    /// <summary>Holds each stream alive while SoundPlayer reads it asynchronously.</summary>
     private static readonly MemoryStream?[] HeldStreams = new MemoryStream[PoolSize];
     private static int _nextSlot;
 
@@ -28,10 +25,6 @@ public static class SoundGenerator
             Players[i] = new SoundPlayer();
     }
 
-    /// <summary>
-    /// Plays a mono 16-bit PCM sine at 44.1 kHz. Frequency is jittered by ±50–100 Hz for variety.
-    /// Uses <see cref="SoundPlayer.Play"/> (non-blocking). Overlap uses round-robin pool slots.
-    /// </summary>
     public static void PlayTone(int frequencyHz, int durationMs)
     {
         int jitter = Random.Shared.Next(-95, 96);
@@ -80,9 +73,21 @@ public static class SoundGenerator
     public static void PlayGameOverSound() =>
         PlayTone(Random.Shared.Next(150, 301), Random.Shared.Next(220, 401));
 
-    /// <summary>
-    /// Writes a valid in-memory WAV: RIFF → WAVE → fmt (PCM) → data (16-bit mono samples).
-    /// </summary>
+    /// <summary>Rising “power up” chirp for shield pickup.</summary>
+    public static void PlayShieldPickupSound()
+    {
+        PlayTone(520, 45);
+        PlayTone(880, 55);
+    }
+
+    /// <summary>Bright short impact for shield absorbing a hit.</summary>
+    public static void PlayShieldBlockSound() =>
+        PlayTone(Random.Shared.Next(1100, 1401), Random.Shared.Next(70, 95));
+
+    /// <summary>Short high “zip” when a piercing round passes through a bar.</summary>
+    public static void PlayPierceHitSound() =>
+        PlayTone(Random.Shared.Next(1250, 1651), Random.Shared.Next(38, 58));
+
     private static MemoryStream BuildWavSine(int frequencyHz, int durationMs)
     {
         int sampleCount = SampleRate * durationMs / 1000;
@@ -94,12 +99,10 @@ public static class SoundGenerator
         var ms = new MemoryStream(44 + dataBytes);
         using (var bw = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true))
         {
-            // --- RIFF container ---
             bw.Write(Encoding.ASCII.GetBytes("RIFF"));
             bw.Write(riffChunkSize);
             bw.Write(Encoding.ASCII.GetBytes("WAVE"));
 
-            // --- fmt chunk (PCM) ---
             bw.Write(Encoding.ASCII.GetBytes("fmt "));
             bw.Write(16);
             bw.Write((short)1);
@@ -109,7 +112,6 @@ public static class SoundGenerator
             bw.Write((short)(Channels * BitsPerSample / 8));
             bw.Write((short)BitsPerSample);
 
-            // --- data chunk (raw PCM) ---
             bw.Write(Encoding.ASCII.GetBytes("data"));
             bw.Write(dataBytes);
 
@@ -127,7 +129,6 @@ public static class SoundGenerator
         return ms;
     }
 
-    /// <summary>Raised-cosine attack × release so very short tones still avoid clicks.</summary>
     private static double CosineEnvelope(int i, int n)
     {
         int attack = Math.Max(4, n / 10);
@@ -152,4 +153,3 @@ public static class SoundGenerator
         return a * r;
     }
 }
-
