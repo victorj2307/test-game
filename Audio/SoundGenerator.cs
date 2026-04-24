@@ -18,12 +18,20 @@ public static class SoundGenerator
 
     private static readonly SoundPlayer[] Players = new SoundPlayer[PoolSize];
     private static readonly MemoryStream?[] HeldStreams = new MemoryStream[PoolSize];
+    private static readonly Dictionary<string, byte[][]> SoundBank = new();
     private static int _nextSlot;
 
     static SoundGenerator()
     {
         for (int i = 0; i < PoolSize; i++)
             Players[i] = new SoundPlayer();
+        WarmupBank();
+    }
+
+    /// <summary>Ensures static warmup executes before gameplay.</summary>
+    public static void Warmup()
+    {
+        _ = Players.Length;
     }
 
     /// <summary>
@@ -89,34 +97,104 @@ public static class SoundGenerator
 
     /// <summary>Fires a short bright tone for player shots.</summary>
     public static void PlayShootSound() =>
-        PlayTone(Random.Shared.Next(1000, 1401), Random.Shared.Next(45, 61));
+        PlayFromBank("shoot");
 
     /// <summary>Fires a short medium tone for standard impacts.</summary>
     public static void PlayHitSound() =>
-        PlayTone(Random.Shared.Next(600, 901), Random.Shared.Next(65, 101));
+        PlayFromBank("hit");
 
     /// <summary>Fires a longer low tone for game over.</summary>
     public static void PlayGameOverSound() =>
-        PlayTone(Random.Shared.Next(150, 301), Random.Shared.Next(220, 401));
+        PlayFromBank("gameover");
 
     /// <summary>Distinct short-low cue for losing one life (non-terminal).</summary>
     public static void PlayLifeLostSound() =>
-        PlayTone(Random.Shared.Next(280, 421), Random.Shared.Next(140, 201));
+        PlayFromBank("lifelost");
 
     /// <summary>Rising “power up” chirp for shield pickup.</summary>
     public static void PlayShieldPickupSound()
     {
-        PlayTone(520, 45);
-        PlayTone(880, 55);
+        PlayFromBank("shield_pickup_low");
+        PlayFromBank("shield_pickup_high");
     }
 
     /// <summary>Bright short impact for shield absorbing a hit.</summary>
     public static void PlayShieldBlockSound() =>
-        PlayTone(Random.Shared.Next(1100, 1401), Random.Shared.Next(70, 95));
+        PlayFromBank("shield_block");
 
     /// <summary>Short high “zip” when a piercing round passes through a bar.</summary>
     public static void PlayPierceHitSound() =>
-        PlayTone(Random.Shared.Next(1250, 1651), Random.Shared.Next(38, 58));
+        PlayFromBank("pierce");
+
+    private static void WarmupBank()
+    {
+        int variants = Game.Core.GameRuntimeConfig.Current.AudioVariantCount;
+        SoundBank["shoot"] = BuildVariants(1000, 1400, 45, 60, variants);
+        SoundBank["hit"] = BuildVariants(600, 900, 65, 100, variants);
+        SoundBank["gameover"] = BuildVariants(150, 300, 220, 400, Math.Max(2, variants / 2));
+        SoundBank["lifelost"] = BuildVariants(280, 420, 140, 200, Math.Max(2, variants / 2));
+        SoundBank["shield_pickup_low"] = BuildVariants(520, 560, 42, 52, Math.Max(2, variants / 2));
+        SoundBank["shield_pickup_high"] = BuildVariants(840, 920, 50, 62, Math.Max(2, variants / 2));
+        SoundBank["shield_block"] = BuildVariants(1100, 1400, 70, 95, variants);
+        SoundBank["pierce"] = BuildVariants(1250, 1650, 38, 58, variants);
+    }
+
+    private static byte[][] BuildVariants(int minFreq, int maxFreq, int minMs, int maxMs, int count)
+    {
+        count = Math.Clamp(count, 1, 64);
+        var variants = new byte[count][];
+        for (int i = 0; i < count; i++)
+        {
+            int f = Random.Shared.Next(minFreq, maxFreq + 1);
+            int ms = Random.Shared.Next(minMs, maxMs + 1);
+            using MemoryStream wav = BuildWavSine(f, ms);
+            variants[i] = wav.ToArray();
+        }
+
+        return variants;
+    }
+
+    private static void PlayFromBank(string key)
+    {
+        if (!SoundBank.TryGetValue(key, out byte[][]? variants) || variants.Length == 0)
+            return;
+        byte[] selected = variants[Random.Shared.Next(variants.Length)];
+        PlayBytes(selected);
+    }
+
+    private static void PlayBytes(byte[] bytes)
+    {
+        int slot = Interlocked.Increment(ref _nextSlot);
+        if (slot < 0) slot = -slot;
+        slot %= PoolSize;
+
+        var wav = new MemoryStream(bytes, writable: false);
+        SoundPlayer player = Players[slot];
+        try
+        {
+            player.Stop();
+            HeldStreams[slot]?.Dispose();
+            HeldStreams[slot] = wav;
+            wav.Position = 0;
+            player.Stream = wav;
+            player.Load();
+            player.Play();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Debug.WriteLine($"[SoundGenerator] Invalid player state: {ex}");
+            HeldStreams[slot]?.Dispose();
+            HeldStreams[slot] = null;
+            wav.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[SoundGenerator] Unexpected playback error: {ex}");
+            HeldStreams[slot]?.Dispose();
+            HeldStreams[slot] = null;
+            wav.Dispose();
+        }
+    }
 
     /// <summary>
     /// Builds a complete mono PCM WAV stream for the requested sine tone.

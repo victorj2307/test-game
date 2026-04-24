@@ -8,4 +8,10 @@
     <RootNamespace>Game</RootNamespace>
     <AssemblyName>RetroArcade</AssemblyName>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="RetroArcade.Tests\**\*.cs" />
+    <EmbeddedResource Remove="RetroArcade.Tests\**\*" />
+    <None Remove="RetroArcade.Tests\**\*" />
+  </ItemGroup>
 </Project>

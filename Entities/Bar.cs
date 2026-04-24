@@ -10,7 +10,8 @@ namespace Game.Entities;
 public sealed class Bar
 {
     public int X { get; }
-    public int Y { get; private set; }
+    private float _y;
+    public int Y => (int)MathF.Round(_y);
     public int Width { get; }
     public int Height { get; private set; }
     public int Speed => Math.Max(1, (int)MathF.Round(_currentSpeed));
@@ -31,7 +32,7 @@ public sealed class Bar
     public Bar(int x, int y, int width, int height, BarType type, bool isSpecial, int initialHeight, float speedScale, int globalBarSpeed)
     {
         X = x;
-        Y = y;
+        _y = y;
         Width = width;
         Height = height;
         Type = type;
@@ -54,25 +55,31 @@ public sealed class Bar
     private float TargetPixelsFromGlobal(int globalSpeed) =>
         Math.Max(1f, (int)(globalSpeed * _speedScale + 0.5f));
 
-    public void TickSpeedTowardTarget()
+    public void TickSpeedTowardTarget(float deltaSeconds)
     {
+        float step = MathF.Max(0.1f, deltaSeconds * GameConfig.Ui.TargetFps);
         float d = _targetSpeed - _currentSpeed;
         if (MathF.Abs(d) < GameConfig.Bars.SpeedSnapEpsilon)
             _currentSpeed = _targetSpeed;
         else
-            _currentSpeed += d * GameConfig.Bars.SpeedLerpFactor;
+            _currentSpeed += d * GameConfig.Bars.SpeedLerpFactor * step;
     }
 
-    public void Move() => Y += Math.Max(1, (int)MathF.Round(_currentSpeed));
-
-    public void TickEffect()
+    public void Move(float deltaSeconds)
     {
+        float step = MathF.Max(0.1f, deltaSeconds * GameConfig.Ui.TargetFps);
+        _y += _currentSpeed * step;
+    }
+
+    public void TickEffect(float deltaSeconds)
+    {
+        int timerStep = Math.Max(1, (int)MathF.Round(MathF.Max(0.1f, deltaSeconds * GameConfig.Ui.TargetFps)));
         if (HitFlashTimer > 0)
         {
-            HitFlashTimer--;
+            HitFlashTimer = Math.Max(0, HitFlashTimer - timerStep);
             if (HitFlashTimer == 0) PierceFlash = false;
         }
-        if (HitPulseFrames > 0) HitPulseFrames--;
+        if (HitPulseFrames > 0) HitPulseFrames = Math.Max(0, HitPulseFrames - timerStep);
     }
 
     public void RegisterHit()

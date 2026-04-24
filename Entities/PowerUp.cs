@@ -1,4 +1,5 @@
 using System.Drawing;
+using Game.Core;
 
 namespace Game.Entities;
 
@@ -23,8 +24,12 @@ public sealed class PowerUp
         Type = type;
     }
 
-    /// <summary>Moves the power-up downward one frame.</summary>
-    public void Update() => Y += FallSpeed;
+    /// <summary>Moves the power-up downward using a 60 FPS baseline.</summary>
+    public void Update(float deltaSeconds)
+    {
+        float step = MathF.Max(0.1f, deltaSeconds * GameConfig.Ui.TargetFps);
+        Y += Math.Max(1, (int)MathF.Round(FallSpeed * step));
+    }
 
     /// <summary>Axis-aligned bounds used for pickup intersection.</summary>
     public Rectangle GetBounds() => new(X, Y, Size, Size);

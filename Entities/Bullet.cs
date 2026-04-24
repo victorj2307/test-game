@@ -1,4 +1,5 @@
 using System.Drawing;
+using Game.Core;
 
 namespace Game.Entities;
 
@@ -40,12 +41,13 @@ public sealed class Bullet
     /// <summary>Marks the bullet inactive so update/collision can skip it.</summary>
     public void Deactivate() => IsActive = false;
 
-    /// <summary>Advances the bullet one simulation step.</summary>
-    public void Update()
+    /// <summary>Advances the bullet one simulation step using a 60 FPS baseline.</summary>
+    public void Update(float deltaSeconds)
     {
         if (!IsActive) return;
-        _x += DriftX;
-        _y -= Speed;
+        float step = MathF.Max(0.1f, deltaSeconds * GameConfig.Ui.TargetFps);
+        _x += DriftX * step;
+        _y -= Speed * step;
     }
 
     /// <summary>

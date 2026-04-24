@@ -1,4 +1,5 @@
 using System.Drawing;
+using Game.Core;
 
 namespace Game.Entities;
 
@@ -22,8 +23,13 @@ public sealed class ExplosionFx
         MaxWaveRadius = maxWaveRadius;
     }
 
-    /// <summary>Advances the effect by one frame.</summary>
-    public void Tick() => FramesLeft--;
+    /// <summary>Advances the effect by one frame (delta-time scaled).</summary>
+    public void Tick(float deltaSeconds)
+    {
+        float step = MathF.Max(0.1f, deltaSeconds * GameConfig.Ui.TargetFps);
+        int timerStep = Math.Max(1, (int)MathF.Round(step));
+        FramesLeft = Math.Max(0, FramesLeft - timerStep);
+    }
 
     /// <summary>True when no frames remain.</summary>
     public bool IsDead => FramesLeft <= 0;

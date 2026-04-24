@@ -10,11 +10,11 @@ public sealed class GameState
     public const int ComboMaxMultiplier = GameConfig.Scoring.ComboMaxMultiplier;
     public const int ComboTimeWindowFrames = GameConfig.Scoring.ComboTimeWindowFrames;
 
-    public bool IsPlaying { get; set; }
-    public bool IsGameOver { get; set; }
-    public bool IsLifeLost { get; set; }
-    public bool IsPaused { get; set; }
-    public bool ShowLeaderboard { get; set; }
+    public bool IsPlaying { get; private set; }
+    public bool IsGameOver { get; private set; }
+    public bool IsLifeLost { get; private set; }
+    public bool IsPaused { get; private set; }
+    public bool ShowLeaderboard { get; private set; }
     /// <summary>Relaxed difficulty, boosted drops, optional hotkeys; toggled at runtime (persists across new games).</summary>
     public bool IsDevMode { get; set; }
     public int Score { get; set; }
@@ -28,6 +28,7 @@ public sealed class GameState
 
     private int _combo;
     private int _lastDestroyFrame = -1;
+    /// <summary>Transient count of destroys during the current difficulty tick window (debug/telemetry).</summary>
     public int KillsInWindow { get; set; }
 
     public int BarSpeed { get; set; }
@@ -106,17 +107,45 @@ public sealed class GameState
         IsPaused = paused;
     }
 
+    /// <summary>Starts a playable state and clears terminal/overlay flags.</summary>
+    public void StartGame()
+    {
+        IsPlaying = true;
+        IsGameOver = false;
+        IsLifeLost = false;
+        IsPaused = false;
+        ShowLeaderboard = false;
+    }
+
+    /// <summary>Ends active play and transitions to terminal game-over state.</summary>
+    public void EndGame() => SetGameOver();
+
+    /// <summary>Enters paused state when current run can be paused.</summary>
+    public void Pause() => SetPaused(true);
+
+    /// <summary>Leaves paused state when current run can resume.</summary>
+    public void Resume() => SetPaused(false);
+
+    /// <summary>Shows leaderboard overlay.</summary>
+    public void ShowLeaderboardScreen() => ShowLeaderboard = true;
+
+    /// <summary>Hides leaderboard overlay.</summary>
+    public void HideLeaderboardScreen() => ShowLeaderboard = false;
+
     /// <summary>Controlled playing-state transition.</summary>
     public void SetPlaying(bool playing)
     {
         IsPlaying = playing;
         if (!playing)
             IsPaused = false;
+        if (!playing && IsLifeLost)
+            IsLifeLost = false;
     }
 
     /// <summary>Controlled life-lost transition.</summary>
     public void SetLifeLost(bool lifeLost)
     {
+        if (IsGameOver && lifeLost) return;
         IsLifeLost = lifeLost;
         if (lifeLost)
             IsPaused = false;
@@ -129,7 +158,7 @@ public sealed class GameState
         IsLifeLost = false;
         IsPaused = false;
         IsPlaying = false;
-        ShowLeaderboard = true;
+        ShowLeaderboardScreen();
     }
 
     /// <summary>Resets all run-scoped state to new-game defaults.</summary>
@@ -140,7 +169,7 @@ public sealed class GameState
         IsGameOver = false;
         IsLifeLost = false;
         IsPaused = false;
-        ShowLeaderboard = false;
+        HideLeaderboardScreen();
         ElapsedFrames = 0;
         BarSpeed = initialBarSpeed;
         SpawnIntervalFrames = initialSpawnIntervalFrames;

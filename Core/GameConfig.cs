@@ -11,7 +11,9 @@ public static class GameConfig
     /// </summary>
     public static class Persistence
     {
+        public const string AppFolderName = "RetroArcade"; // AppData subfolder used for local game persistence.
         public const int LeaderboardMaxEntries = 10; // Number of leaderboard rows kept after sorting.
+        public const int MaxLeaderboardFileBytes = 64 * 1024; // Defensive size cap for leaderboard JSON loading.
         public const string HighScoreFileName = "highscore.json"; // Local filename used for persisted leaderboard data.
         public const string DefaultPlayerName = "PLAYER"; // Fallback nickname when user input is empty/whitespace.
         public const int NameInputMaxLength = 16; // Maximum nickname length accepted in the game-over prompt.
@@ -221,6 +223,8 @@ public static class GameConfig
     /// </summary>
     public static class Ui
     {
+        public const string WindowTitle = "RetroArcade (WinForms)"; // Main form title for branding consistency.
+        public const int TargetFps = 60; // Baseline used for delta-time scaling to preserve gameplay feel.
         public const int WindowWidth = 480; // Default form client width.
         public const int WindowHeight = 640; // Default form client height.
         public const int GameTimerIntervalMs = 16; // Timer interval targeting ~60 updates per second.

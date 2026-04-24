@@ -1,4 +1,5 @@
 using System.Drawing;
+using Game.Core;
 
 namespace Game.Entities;
 
@@ -23,15 +24,17 @@ public sealed class Particle
         Color = color;
     }
 
-    /// <summary>Advances particle motion and decrements lifetime.</summary>
-    public void Update()
+    /// <summary>Advances particle motion and decrements lifetime with delta scaling.</summary>
+    public void Update(float deltaSeconds)
     {
         if (Lifetime <= 0) return;
+        float step = MathF.Max(0.1f, deltaSeconds * GameConfig.Ui.TargetFps);
+        int timerStep = Math.Max(1, (int)MathF.Round(step));
         const float gravity = 0.22f;
-        Vy += gravity;
-        X += Vx;
-        Y += Vy;
-        Lifetime--;
+        Vy += gravity * step;
+        X += Vx * step;
+        Y += Vy * step;
+        Lifetime = Math.Max(0, Lifetime - timerStep);
     }
 
     /// <summary>True once lifetime reaches zero.</summary>

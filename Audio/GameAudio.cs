@@ -3,6 +3,9 @@ namespace Game.Audio;
 /// <summary>Game-facing SFX; all tones are generated in memory (no files).</summary>
 public static class GameAudio
 {
+    /// <summary>Forces audio bank warmup before gameplay starts.</summary>
+    public static void Initialize() => SoundGenerator.Warmup();
+
     /// <summary>Plays the primary shooting one-shot.</summary>
     public static void PlayShoot() => SoundGenerator.PlayShootSound();
 

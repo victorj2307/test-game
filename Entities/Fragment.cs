@@ -1,4 +1,5 @@
 using System.Drawing;
+using Game.Core;
 
 namespace Game.Entities;
 
@@ -40,14 +41,16 @@ public sealed class Fragment
         BaseColor = baseColor;
     }
 
-    /// <summary>Advances fragment physics by one frame.</summary>
-    public void Update()
+    /// <summary>Advances fragment physics with delta scaling.</summary>
+    public void Update(float deltaSeconds)
     {
         if (Lifetime <= 0) return;
-        Vy += Gravity;
-        X += Vx;
-        Y += Vy;
-        Lifetime--;
+        float step = MathF.Max(0.1f, deltaSeconds * GameConfig.Ui.TargetFps);
+        int timerStep = Math.Max(1, (int)MathF.Round(step));
+        Vy += Gravity * step;
+        X += Vx * step;
+        Y += Vy * step;
+        Lifetime = Math.Max(0, Lifetime - timerStep);
     }
 
     /// <summary>True when lifetime is depleted.</summary>

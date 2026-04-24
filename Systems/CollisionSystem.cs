@@ -9,6 +9,7 @@ namespace Game.Systems;
 /// <summary>Bullet vs bar hits, damage, particles, destroy scoring, and bomb wave queue.</summary>
 public sealed class CollisionSystem
 {
+    private const int MaxLaneProbeOffset = 1;
     private readonly GameState _state;
     private readonly EntityManager _entities;
     private readonly Random _random;
@@ -16,6 +17,7 @@ public sealed class CollisionSystem
     private readonly SpawnSystem _spawn;
 
     private readonly List<PendingBombKill> _bombKillQueue = new();
+    private readonly Dictionary<int, List<int>> _barsByLane = new();
 
     private enum DestroyStyle
     {
@@ -63,6 +65,7 @@ public sealed class CollisionSystem
     /// </summary>
     public void Resolve(int damagePerHit)
     {
+        BuildBarsByLane();
         for (int bi = _entities.Bullets.Count - 1; bi >= 0; bi--)
         {
             Bullet bl = _entities.Bullets[bi];
@@ -70,15 +73,7 @@ public sealed class CollisionSystem
             while (!removeBullet)
             {
                 Rectangle bRect = bl.GetBounds();
-                int hitIndex = -1;
-                for (int j = 0; j < _entities.Bars.Count; j++)
-                {
-                    Bar bar = _entities.Bars[j];
-                    if (bar.Height <= 0) continue;
-                    if (!bar.GetBounds().IntersectsWith(bRect)) continue;
-                    hitIndex = j;
-                    break;
-                }
+                int hitIndex = FindHitBarIndexInBulletLanes(bRect);
 
                 if (hitIndex < 0) break;
 
@@ -103,7 +98,10 @@ public sealed class CollisionSystem
                     removeBullet = true;
 
                 if (hitIndex < _entities.Bars.Count && _entities.Bars[hitIndex].IsDestroyed)
+                {
                     DestroyBarAt(hitIndex);
+                    BuildBarsByLane();
+                }
 
                 if (removeBullet)
                 {
@@ -112,6 +110,61 @@ public sealed class CollisionSystem
                 }
             }
         }
+    }
+
+    private int GetLaneIndexFromX(int x)
+    {
+        int laneWidth = Math.Max(1, GameRuntimeConfig.Current.CollisionLaneWidth);
+        return x / laneWidth;
+    }
+
+    private void BuildBarsByLane()
+    {
+        foreach (var kvp in _barsByLane)
+            kvp.Value.Clear();
+
+        for (int i = 0; i < _entities.Bars.Count; i++)
+        {
+            Bar bar = _entities.Bars[i];
+            if (bar.Height <= 0) continue;
+            Rectangle r = bar.GetBounds();
+            if (r.Width <= 0 || r.Height <= 0) continue;
+            int startLane = GetLaneIndexFromX(r.Left);
+            int endLane = GetLaneIndexFromX(Math.Max(r.Left, r.Right - 1));
+            for (int lane = startLane; lane <= endLane; lane++)
+            {
+                if (!_barsByLane.TryGetValue(lane, out var list))
+                {
+                    list = [];
+                    _barsByLane[lane] = list;
+                }
+
+                list.Add(i);
+            }
+        }
+    }
+
+    private int FindHitBarIndexInBulletLanes(Rectangle bulletRect)
+    {
+        int startLane = GetLaneIndexFromX(bulletRect.Left) - MaxLaneProbeOffset;
+        int endLane = GetLaneIndexFromX(Math.Max(bulletRect.Left, bulletRect.Right - 1)) + MaxLaneProbeOffset;
+        int hitIndex = -1;
+        for (int lane = startLane; lane <= endLane; lane++)
+        {
+            if (!_barsByLane.TryGetValue(lane, out var candidates)) continue;
+            for (int c = 0; c < candidates.Count; c++)
+            {
+                int idx = candidates[c];
+                if (idx < 0 || idx >= _entities.Bars.Count) continue;
+                Bar bar = _entities.Bars[idx];
+                if (bar.Height <= 0) continue;
+                if (!bar.GetBounds().IntersectsWith(bulletRect)) continue;
+                if (hitIndex < 0 || idx < hitIndex)
+                    hitIndex = idx;
+            }
+        }
+
+        return hitIndex;
     }
 
     /// <summary>Triggers bomb detonation flow at the given world position.</summary>

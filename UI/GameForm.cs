@@ -30,7 +30,7 @@ public sealed class GameForm : Form
 
     public GameForm()
     {
-        Text = "Retro Blaster (WinForms)";
+        Text = GameConfig.Ui.WindowTitle;
         ClientSize = new Size(GameConfig.Ui.WindowWidth, GameConfig.Ui.WindowHeight);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;

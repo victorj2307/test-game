@@ -9,17 +9,18 @@ public static class HighScoreStore
 {
     private const string FileName = GameConfig.Persistence.HighScoreFileName;
     private const string DefaultName = GameConfig.Persistence.DefaultPlayerName;
+    private const int MaxFileBytes = GameConfig.Persistence.MaxLeaderboardFileBytes;
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    internal static string? StorageRootOverride { get; set; }
 
     /// <summary>Loads, normalizes, and trims leaderboard entries from local storage.</summary>
     public static IReadOnlyList<LeaderboardEntry> LoadLeaderboard(int maxEntries)
     {
         try
         {
-            string? dir = AppContext.BaseDirectory;
-            if (string.IsNullOrEmpty(dir)) return Array.Empty<LeaderboardEntry>();
-            string path = Path.Combine(dir, FileName);
+            string path = ResolveReadPath();
             if (!File.Exists(path)) return Array.Empty<LeaderboardEntry>();
+            if (!IsReasonableSize(path)) return Array.Empty<LeaderboardEntry>();
 
             var json = File.ReadAllText(path);
             if (string.IsNullOrWhiteSpace(json)) return Array.Empty<LeaderboardEntry>();
@@ -91,8 +92,7 @@ public static class HighScoreStore
 
         try
         {
-            string dir = AppContext.BaseDirectory ?? ".";
-            string path = Path.Combine(dir, FileName);
+            string path = GetPrimaryStoragePath();
             var entries = LoadLeaderboard(maxEntries).ToList();
             string normalizedName = NormalizePlayerName(name);
             string key = ToNameKey(normalizedName);
@@ -160,6 +160,75 @@ public static class HighScoreStore
         else
         {
             File.Move(tempPath, path);
+        }
+    }
+
+    private static bool IsReasonableSize(string path)
+    {
+        long bytes = new FileInfo(path).Length;
+        if (bytes <= MaxFileBytes) return true;
+        Debug.WriteLine($"[HighScoreStore] Ignoring oversized leaderboard ({bytes} bytes): {path}");
+        return false;
+    }
+
+    private static string ResolveReadPath()
+    {
+        string primaryPath = GetPrimaryStoragePath();
+        string legacyPath = GetLegacyStoragePath();
+        TryMigrateLegacyToPrimary(primaryPath, legacyPath);
+        if (File.Exists(primaryPath))
+            return primaryPath;
+        return legacyPath;
+    }
+
+    private static string GetPrimaryStoragePath()
+    {
+        string root = GetStorageRootPath();
+        return Path.Combine(root, FileName);
+    }
+
+    private static string GetLegacyStoragePath()
+    {
+        string? baseDir = AppContext.BaseDirectory;
+        if (string.IsNullOrWhiteSpace(baseDir))
+            return Path.Combine(GetStorageRootPath(), FileName);
+        return Path.Combine(baseDir, FileName);
+    }
+
+    private static string GetStorageRootPath()
+    {
+        if (!string.IsNullOrWhiteSpace(StorageRootOverride))
+            return StorageRootOverride!;
+
+        string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        if (string.IsNullOrWhiteSpace(appData))
+            return AppContext.BaseDirectory ?? ".";
+        return Path.Combine(appData, GameConfig.Persistence.AppFolderName);
+    }
+
+    private static void TryMigrateLegacyToPrimary(string primaryPath, string legacyPath)
+    {
+        if (string.Equals(primaryPath, legacyPath, StringComparison.OrdinalIgnoreCase)) return;
+        if (File.Exists(primaryPath) || !File.Exists(legacyPath)) return;
+        if (!IsReasonableSize(legacyPath)) return;
+
+        try
+        {
+            string legacyJson = File.ReadAllText(legacyPath);
+            WriteAllTextAtomic(primaryPath, legacyJson);
+            Debug.WriteLine($"[HighScoreStore] Migrated leaderboard to AppData: {primaryPath}");
+        }
+        catch (IOException ex)
+        {
+            Debug.WriteLine($"[HighScoreStore] Migration I/O error: {ex}");
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            Debug.WriteLine($"[HighScoreStore] Migration access denied: {ex}");
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[HighScoreStore] Migration unexpected error: {ex}");
         }
     }
 

@@ -26,6 +26,7 @@ public sealed class GameManager
 
     public GameManager()
     {
+        GameAudio.Initialize();
         _difficulty = new DifficultySystem(_state, _entities);
         _spawn = new SpawnSystem(_state, _entities, _random);
         _collisions = new CollisionSystem(_state, _entities, _random, _difficulty, _spawn);
@@ -105,7 +106,8 @@ public sealed class GameManager
     public void TogglePause()
     {
         if (!_state.IsPlaying || _state.IsGameOver || _state.IsLifeLost) return;
-        _state.SetPaused(!_state.IsPaused);
+        if (_state.IsPaused) _state.Resume();
+        else _state.Pause();
     }
 
     /// <summary>Creates player and resets per-run spawn countdown against the current viewport.</summary>
@@ -134,6 +136,7 @@ public sealed class GameManager
     public void EnterAttractMode(int clientWidth, int playHeight)
     {
         _state.SetPlaying(false);
+        _state.HideLeaderboardScreen();
         _leaderboard = HighScoreStore.LoadLeaderboard(LeaderboardMaxEntries).ToList();
         ResetState(clientWidth, playHeight);
     }
@@ -141,7 +144,7 @@ public sealed class GameManager
     /// <summary>Starts a new playable run.</summary>
     public void StartNewGame(int clientWidth, int playHeight)
     {
-        _state.SetPlaying(true);
+        _state.StartGame();
         ResetState(clientWidth, playHeight);
     }
 
@@ -209,15 +212,15 @@ public sealed class GameManager
             }
             ProcessFiring(wantFire);
 
-            _entities.UpdateBullets();
-            _entities.UpdateParticles();
-            _entities.UpdateFragments();
-            _entities.UpdatePowerUps(playHeight);
+            _entities.UpdateBullets(deltaSeconds);
+            _entities.UpdateParticles(deltaSeconds);
+            _entities.UpdateFragments(deltaSeconds);
+            _entities.UpdatePowerUps(playHeight, deltaSeconds);
             CollectPowerUps(clientWidth, playHeight);
             if (_state.TickBombFuse())
                 _collisions.ExecuteBombExplosionAt(_state.BombIndicatorX, _state.BombIndicatorY);
             SyncBarSpeedTargetForActiveEffects(force: false);
-            _entities.UpdateBars();
+            _entities.UpdateBars(deltaSeconds);
 
             for (int i = _entities.Bars.Count - 1; i >= 0; i--)
             {
@@ -250,7 +253,7 @@ public sealed class GameManager
             }
 
             _collisions.Resolve(GameConfig.Scoring.DamagePerHit);
-            _entities.UpdateExplosions();
+            _entities.UpdateExplosions(deltaSeconds);
             _collisions.TickPendingBombKills();
             if (!_state.IsGameOver) _spawn.TrySpawn(clientWidth);
         }

@@ -7,6 +7,8 @@ public sealed class DifficultySystem
 {
     private readonly GameState _state;
     private readonly EntityManager _entities;
+    private int _cachedSegmentStartIdx;
+    private int _lastAppliedEffectiveBarSpeed = int.MinValue;
 
     public DifficultySystem(GameState state, EntityManager entities)
     {
@@ -33,8 +35,8 @@ public sealed class DifficultySystem
 
     private void ApplyTable(bool force)
     {
-        float seconds = _state.ElapsedFrames / GameConfig.Difficulty.DifficultyTimeScaleFrames;
-        GameConfig.Difficulty.DifficultyEntry sample = SampleByTime(seconds);
+        float seconds = _state.ElapsedFrames / GameRuntimeConfig.Current.DifficultyTimeScaleFrames;
+        GameConfig.Difficulty.DifficultyEntry sample = SampleByTimeCached(seconds);
         float lastTime = GameConfig.Difficulty.Table[^1].Seconds;
         _state.Difficulty01 = lastTime > 0f ? Math.Clamp(seconds / lastTime, 0f, 1f) : 0f;
 
@@ -53,11 +55,16 @@ public sealed class DifficultySystem
         _state.SpawnIntervalFrames = SmoothInt(_state.SpawnIntervalFrames, targetSpawnInterval, force ? 1f : GameConfig.Difficulty.SpawnIntervalBlend);
         _state.DynamicMaxBarsOnScreen = SmoothInt(_state.DynamicMaxBarsOnScreen, targetMaxBars, force ? 1f : GameConfig.Difficulty.MaxBarsBlend);
 
-        foreach (var b in _entities.Bars) b.SetTargetMoveSpeed(_state.GetEffectiveBarSpeed());
+        int effectiveSpeed = _state.GetEffectiveBarSpeed();
+        if (force || effectiveSpeed != _lastAppliedEffectiveBarSpeed)
+        {
+            _lastAppliedEffectiveBarSpeed = effectiveSpeed;
+            foreach (var b in _entities.Bars) b.SetTargetMoveSpeed(effectiveSpeed);
+        }
         _state.KillsInWindow = 0;
     }
 
-    private static GameConfig.Difficulty.DifficultyEntry SampleByTime(float seconds)
+    internal GameConfig.Difficulty.DifficultyEntry SampleByTimeCached(float seconds)
     {
         var table = GameConfig.Difficulty.Table;
         if (table.Length == 0)
@@ -67,23 +74,36 @@ public sealed class DifficultySystem
                 GameConfig.Difficulty.MaxSpawnIntervalFrames,
                 GameConfig.Difficulty.MinBarsOnScreen);
 
-        if (seconds <= table[0].Seconds) return table[0];
-
-        for (int i = 1; i < table.Length; i++)
+        if (seconds <= table[0].Seconds)
         {
-            GameConfig.Difficulty.DifficultyEntry b = table[i];
-            if (seconds > b.Seconds) continue;
-            GameConfig.Difficulty.DifficultyEntry a = table[i - 1];
-            float span = Math.Max(GameConfig.Difficulty.InterpolationSpanEpsilon, b.Seconds - a.Seconds);
-            float t = Math.Clamp((seconds - a.Seconds) / span, 0f, 1f);
-            return new GameConfig.Difficulty.DifficultyEntry(
-                seconds,
-                Lerp(a.BarSpeed, b.BarSpeed, t),
-                Lerp(a.SpawnIntervalFrames, b.SpawnIntervalFrames, t),
-                Lerp(a.MaxBarsOnScreen, b.MaxBarsOnScreen, t));
+            _cachedSegmentStartIdx = 0;
+            return table[0];
         }
 
-        return table[^1];
+        if (table.Length == 1)
+        {
+            _cachedSegmentStartIdx = 0;
+            return table[0];
+        }
+
+        _cachedSegmentStartIdx = Math.Clamp(_cachedSegmentStartIdx, 0, table.Length - 2);
+        while (_cachedSegmentStartIdx < table.Length - 2 && seconds > table[_cachedSegmentStartIdx + 1].Seconds)
+            _cachedSegmentStartIdx++;
+        while (_cachedSegmentStartIdx > 0 && seconds < table[_cachedSegmentStartIdx].Seconds)
+            _cachedSegmentStartIdx--;
+
+        GameConfig.Difficulty.DifficultyEntry a = table[_cachedSegmentStartIdx];
+        GameConfig.Difficulty.DifficultyEntry b = table[_cachedSegmentStartIdx + 1];
+        if (seconds >= table[^1].Seconds)
+            return table[^1];
+
+        float span = Math.Max(GameConfig.Difficulty.InterpolationSpanEpsilon, b.Seconds - a.Seconds);
+        float t = Math.Clamp((seconds - a.Seconds) / span, 0f, 1f);
+        return new GameConfig.Difficulty.DifficultyEntry(
+            seconds,
+            Lerp(a.BarSpeed, b.BarSpeed, t),
+            Lerp(a.SpawnIntervalFrames, b.SpawnIntervalFrames, t),
+            Lerp(a.MaxBarsOnScreen, b.MaxBarsOnScreen, t));
     }
 
     private static float Lerp(float from, float to, float t) => from + (to - from) * Math.Clamp(t, 0f, 1f);

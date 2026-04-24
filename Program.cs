@@ -9,6 +9,9 @@ internal static class Program
     private static void Main()
     {
         ApplicationConfiguration.Initialize();
+#if DEBUG
+        Game.Core.DebugSelfTests.Run();
+#endif
         Application.Run(new GameForm());
     }
 }
