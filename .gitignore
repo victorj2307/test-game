@@ -1,0 +1,20 @@
+# Build
+bin/
+obj/
+out/
+
+# Visual Studio / VS Code / Rider
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.idea/
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Logs / local
+*.log
+highscore.json
