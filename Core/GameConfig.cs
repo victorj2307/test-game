@@ -124,7 +124,12 @@ public static class GameConfig
         public const int ShieldImpactShakeFrames = 12; // Extra shake frames after shield block.
         public const int ShieldBlockShakeMs = 140; // Base shake extension in milliseconds after shield block.
         public const int PierceCount = 2; // Pierce budget; 2 means up to three total impacted bars per bullet.
-        public const int SlowMotionDivisor = 2; // Divides bar speed while Slow Motion is active.
+        /// <summary>Multiplies derived bar fall speed (pixels/frame) while Slow Motion is active; paired with <see cref="SlowMotionMinPixelsPerFrame"/>.</summary>
+        public const float SlowMotionPixelSpeedScale = 0.46f;
+        /// <summary>Lower clamp for bar speed during slow motion so motion stays smooth but clearly below normal.</summary>
+        public const float SlowMotionMinPixelsPerFrame = 0.36f;
+        /// <summary>Faster blend toward the slowed target so the effect is felt within a few frames.</summary>
+        public const float SlowMotionSpeedLerpFactor = 0.38f;
     }
 
     /// <summary>
@@ -189,6 +194,26 @@ public static class GameConfig
         public const int LifeLostShakeMs = 180; // Shake duration when a life is lost.
         public const int FloorHitDevShakeMs = 80; // Dev-mode shake when a floor hit is ignored.
         public const int GameOverShakeMs = 280; // Shake duration when game over is triggered.
+        /// <summary>Simulation speed at the start of last-life cannon destruction (lerps up to 1).</summary>
+        public const float FinalDeathTimeScaleMin = 0.18f;
+        /// <summary>Wall-clock milliseconds to ease <see cref="FinalDeathTimeScaleMin"/> → 1 before game over (~2s for dramatic pacing).</summary>
+        public const int FinalDeathTimeScaleRecoverMs = 2000;
+        /// <summary>Brief full-screen flash when last life is lost (destruction start).</summary>
+        public const int FinalDeathFlashFrames = 10;
+        /// <summary>Short shake while the final-death animation plays.</summary>
+        public const int FinalDeathShakeMs = 220;
+        /// <summary>Rectangular debris count for last-life cannon detonation (grid + radial + sparks).</summary>
+        public const int CannonDestructionFragmentCount = 40;
+        /// <summary>Omnidirectional spark particles at cannon center for last-life burst.</summary>
+        public const int CannonDestructionParticleCount = 52;
+        /// <summary>Hull-shard outward speed range (pixels/frame at 60 FPS baseline).</summary>
+        public const float CannonDestructionChunkSpeedMin = 6.5f;
+        public const float CannonDestructionChunkSpeedMax = 14.5f;
+        /// <summary>Radial blast shard speed range (larger outward motion).</summary>
+        public const float CannonDestructionBlastSpeedMin = 9f;
+        public const float CannonDestructionBlastSpeedMax = 21f;
+        /// <summary>Gravity for cannon-breakup fragments (slightly floaty).</summary>
+        public const float CannonDestructionFragmentGravity = 0.17f;
         public const int DestroyShakeMs = 120; // Shake pulse duration on bar destroy.
         public const int SpawnRelaxAfterLifeLostFrames = 6; // Spawn interval relief applied after losing a life.
         public const int LifeLostFlashFrames = 18; // Life-lost overlay flash duration.

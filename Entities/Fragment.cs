@@ -16,6 +16,8 @@ public sealed class Fragment
     public int Lifetime { get; private set; }
     public int MaxLifetime { get; }
     public Color BaseColor { get; }
+    /// <summary>When true, renderer keeps a higher minimum alpha so the piece stays readable (e.g. cannon energy core).</summary>
+    public bool IsHighlight { get; }
 
     /// <summary>Creates one rectangular debris fragment with gravity and finite lifetime.</summary>
     public Fragment(
@@ -27,7 +29,8 @@ public sealed class Fragment
         float height,
         int lifetime,
         float gravity,
-        Color baseColor)
+        Color baseColor,
+        bool isHighlight = false)
     {
         X = x;
         Y = y;
@@ -39,6 +42,7 @@ public sealed class Fragment
         MaxLifetime = Math.Max(1, lifetime);
         Gravity = gravity;
         BaseColor = baseColor;
+        IsHighlight = isHighlight;
     }
 
     /// <summary>Advances fragment physics with delta scaling.</summary>

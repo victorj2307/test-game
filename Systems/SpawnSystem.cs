@@ -148,7 +148,7 @@ public sealed class SpawnSystem
         if (BarBoundsOverlapAnyExisting(candidate, _entities.Bars)) return false;
         float sc = TypeSpeedScale(type);
         bool isSpecial = _random.NextDouble() < GameConfig.Bars.SpecialChance;
-        _entities.Bars.Add(new Bar(x, spawnY, w, h, type, isSpecial, h, sc, _state.GetEffectiveBarSpeed()));
+        _entities.Bars.Add(new Bar(x, spawnY, w, h, type, isSpecial, h, sc, _state.GetEffectiveBarSpeed(), _state.SlowMotionBarSpeedScale));
         if (setCountdown) _state.SpawnCountdown = _state.EffectiveSpawnIntervalFrames;
         return true;
     }

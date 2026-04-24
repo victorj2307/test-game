@@ -17,7 +17,7 @@ Learning-first C# arcade game: prioritize what a newcomer can read, trace, and c
 ## Documentation
 
 - Brief comments where behavior is non-obvious (timers, difficulty steps, collision edge cases)—not on every line.
-- Update **README.md** when features, player-visible behavior, or major systems change.
+- Update **README.md** accordingly when changes are made.
 
 ## Gameplay integrity
 

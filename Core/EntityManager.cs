@@ -74,11 +74,11 @@ public sealed class EntityManager
     }
 
     /// <summary>Advances all bars (speed easing, movement, and hit effects).</summary>
-    public void UpdateBars(float deltaSeconds)
+    public void UpdateBars(float deltaSeconds, float barSpeedLerpFactor = -1f)
     {
         foreach (var b in Bars)
         {
-            b.TickSpeedTowardTarget(deltaSeconds);
+            b.TickSpeedTowardTarget(deltaSeconds, barSpeedLerpFactor);
             b.Move(deltaSeconds);
             b.TickEffect(deltaSeconds);
         }

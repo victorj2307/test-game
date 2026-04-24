@@ -13,6 +13,12 @@ public sealed class GameState
     public bool IsPlaying { get; private set; }
     public bool IsGameOver { get; private set; }
     public bool IsLifeLost { get; private set; }
+    /// <summary>Last life just lost; cannon destruction plays before <see cref="IsGameOver"/>.</summary>
+    public bool IsFinalDeathAnimating { get; private set; }
+    public int FinalDeathFlashFrames { get; private set; }
+    /// <summary>Multiplies simulation deltas for movement/FX physics (1 except final-death slow-mo recovery).</summary>
+    public float SimulationTimeScale { get; private set; } = 1f;
+    private long _finalDeathSlowMoStartTickMs;
     public bool IsPaused { get; private set; }
     public bool ShowLeaderboard { get; private set; }
     /// <summary>Relaxed difficulty, boosted drops, optional hotkeys; toggled at runtime (persists across new games).</summary>
@@ -101,7 +107,7 @@ public sealed class GameState
     /// <summary>Controlled pause transition that avoids invalid paused states.</summary>
     public void SetPaused(bool paused)
     {
-        if (!IsPlaying || IsGameOver || IsLifeLost)
+        if (!IsPlaying || IsGameOver || IsLifeLost || IsFinalDeathAnimating)
         {
             IsPaused = false;
             return;
@@ -116,6 +122,9 @@ public sealed class GameState
         IsPlaying = true;
         IsGameOver = false;
         IsLifeLost = false;
+        IsFinalDeathAnimating = false;
+        FinalDeathFlashFrames = 0;
+        SimulationTimeScale = 1f;
         IsPaused = false;
         ShowLeaderboard = false;
     }
@@ -159,6 +168,8 @@ public sealed class GameState
     {
         IsGameOver = true;
         IsLifeLost = false;
+        IsFinalDeathAnimating = false;
+        SimulationTimeScale = 1f;
         IsPaused = false;
         IsPlaying = false;
         ShowLeaderboardScreen();
@@ -172,6 +183,9 @@ public sealed class GameState
         Lives = MaxLives;
         IsGameOver = false;
         IsLifeLost = false;
+        IsFinalDeathAnimating = false;
+        FinalDeathFlashFrames = 0;
+        SimulationTimeScale = 1f;
         IsPaused = false;
         HideLeaderboardScreen();
         ElapsedFrames = 0;
@@ -289,6 +303,7 @@ public sealed class GameState
         if (ShieldBlockFlashFrames > 0) ShieldBlockFlashFrames--;
         if (ShieldBlockRingFrames > 0) ShieldBlockRingFrames--;
         if (ShieldImpactShakeFrames > 0) ShieldImpactShakeFrames--;
+        if (FinalDeathFlashFrames > 0) FinalDeathFlashFrames--;
         if (PowerUpTimerFrames > 0)
         {
             PowerUpTimerFrames--;
@@ -339,6 +354,32 @@ public sealed class GameState
         SetGameOver();
         MuzzleFlashFrames = 0;
         ShakeUntilTickMs = Environment.TickCount64 + GameConfig.Effects.GameOverShakeMs;
+    }
+
+    /// <summary>Begins last-life cannon destruction; <see cref="TickFinalDeathAnimation"/> then <see cref="ApplyGameOverShakeAndClearMuzzle"/>.</summary>
+    public void BeginFinalDeathAnimation()
+    {
+        IsFinalDeathAnimating = true;
+        _finalDeathSlowMoStartTickMs = Environment.TickCount64;
+        SimulationTimeScale = GameConfig.Effects.FinalDeathTimeScaleMin;
+        FinalDeathFlashFrames = GameConfig.Effects.FinalDeathFlashFrames;
+        TriggerBombImpactFx(flashFrames: 0, heavyShakeFrames: 10);
+    }
+
+    /// <summary>Eases <see cref="SimulationTimeScale"/> from slow to 1 using wall time. Returns true once when game over should run.</summary>
+    public bool TickFinalDeathAnimation()
+    {
+        if (!IsFinalDeathAnimating) return false;
+        long now = Environment.TickCount64;
+        float dur = GameConfig.Effects.FinalDeathTimeScaleRecoverMs;
+        float u = dur > 0.5f ? Math.Clamp((now - _finalDeathSlowMoStartTickMs) / dur, 0f, 1f) : 1f;
+        float smooth = u * u * (3f - 2f * u);
+        float min = GameConfig.Effects.FinalDeathTimeScaleMin;
+        SimulationTimeScale = min + (1f - min) * smooth;
+        if (u < 1f) return false;
+        SimulationTimeScale = 1f;
+        IsFinalDeathAnimating = false;
+        return true;
     }
 
     /// <summary>Activates a newly collected power-up and initializes its duration/state.</summary>
@@ -419,11 +460,14 @@ public sealed class GameState
     public bool IsMultiShotActive =>
         ActivePowerUp == PowerUpType.MultiShot && PowerUpTimerFrames > 0;
 
-    /// <summary>Returns bar speed after active slow-motion modifier.</summary>
-    public int GetEffectiveBarSpeed() =>
+    /// <summary>Table-driven bar speed; slow motion does not change this (see <see cref="SlowMotionBarSpeedScale"/> on <see cref="Entities.Bar"/>).</summary>
+    public int GetEffectiveBarSpeed() => BarSpeed;
+
+    /// <summary>1 when idle; multiplies bar pixel speed while Slow Motion is active.</summary>
+    public float SlowMotionBarSpeedScale =>
         ActivePowerUp == PowerUpType.SlowMotion && PowerUpTimerFrames > 0
-            ? Math.Max(1, BarSpeed / GameConfig.PowerUps.SlowMotionDivisor)
-            : BarSpeed;
+            ? GameConfig.PowerUps.SlowMotionPixelSpeedScale
+            : 1f;
 
     /// <summary>Consumes active shield charge and triggers shield-block feedback.</summary>
     public bool TryConsumeShield()

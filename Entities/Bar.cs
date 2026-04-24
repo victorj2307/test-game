@@ -29,7 +29,7 @@ public sealed class Bar
     private float _currentSpeed;
     private float _targetSpeed;
 
-    public Bar(int x, int y, int width, int height, BarType type, bool isSpecial, int initialHeight, float speedScale, int globalBarSpeed)
+    public Bar(int x, int y, int width, int height, BarType type, bool isSpecial, int initialHeight, float speedScale, int globalBarSpeed, float slowMotionSpeedScale = 1f)
     {
         X = x;
         _y = y;
@@ -39,30 +39,39 @@ public sealed class Bar
         IsSpecial = isSpecial;
         InitialHeight = initialHeight;
         _speedScale = speedScale;
-        SetMoveSpeed(globalBarSpeed);
+        SetMoveSpeed(globalBarSpeed, slowMotionSpeedScale);
     }
 
-    public void SetMoveSpeed(int globalSpeed)
+    public void SetMoveSpeed(int globalSpeed, float slowMotionSpeedScale = 1f)
     {
-        float t = TargetPixelsFromGlobal(globalSpeed);
+        float t = TargetPixelsFromGlobal(globalSpeed, slowMotionSpeedScale);
         _currentSpeed = t;
         _targetSpeed = t;
     }
 
-    public void SetTargetMoveSpeed(int globalSpeed) =>
-        _targetSpeed = TargetPixelsFromGlobal(globalSpeed);
+    public void SetTargetMoveSpeed(int globalSpeed, float slowMotionSpeedScale = 1f) =>
+        _targetSpeed = TargetPixelsFromGlobal(globalSpeed, slowMotionSpeedScale);
 
-    private float TargetPixelsFromGlobal(int globalSpeed) =>
-        Math.Max(1f, (int)(globalSpeed * _speedScale + 0.5f));
+    private float TargetPixelsFromGlobal(int globalSpeed, float slowMotionSpeedScale)
+    {
+        if (slowMotionSpeedScale < 0.999f)
+        {
+            float raw = globalSpeed * _speedScale * slowMotionSpeedScale;
+            return Math.Max(GameConfig.PowerUps.SlowMotionMinPixelsPerFrame, raw);
+        }
 
-    public void TickSpeedTowardTarget(float deltaSeconds)
+        return Math.Max(1f, (int)(globalSpeed * _speedScale + 0.5f));
+    }
+
+    public void TickSpeedTowardTarget(float deltaSeconds, float lerpFactor = -1f)
     {
         float step = MathF.Max(0.1f, deltaSeconds * GameConfig.Ui.TargetFps);
         float d = _targetSpeed - _currentSpeed;
+        float k = lerpFactor >= 0f ? lerpFactor : GameConfig.Bars.SpeedLerpFactor;
         if (MathF.Abs(d) < GameConfig.Bars.SpeedSnapEpsilon)
             _currentSpeed = _targetSpeed;
         else
-            _currentSpeed += d * GameConfig.Bars.SpeedLerpFactor * step;
+            _currentSpeed += d * k * step;
     }
 
     public void Move(float deltaSeconds)

@@ -109,7 +109,7 @@ public sealed class GameManager
     public void TryDevActivatePowerUpDigit(int digit1To6)
     {
 #if DEBUG
-        if (!_state.IsDevMode || !_state.IsPlaying || _state.IsGameOver || _state.IsPaused || _state.IsLifeLost)
+        if (!_state.IsDevMode || !_state.IsPlaying || _state.IsGameOver || _state.IsPaused || _state.IsLifeLost || _state.IsFinalDeathAnimating)
             return;
         PowerUpType? t = digit1To6 switch
         {
@@ -129,7 +129,7 @@ public sealed class GameManager
     /// <summary>Toggles pause when gameplay is in a pausable state.</summary>
     public void TogglePause()
     {
-        if (!_state.IsPlaying || _state.IsGameOver || _state.IsLifeLost) return;
+        if (!_state.IsPlaying || _state.IsGameOver || _state.IsLifeLost || _state.IsFinalDeathAnimating) return;
         if (_state.IsPaused) _state.Resume();
         else _state.Pause();
     }
@@ -175,7 +175,7 @@ public sealed class GameManager
     /// <summary>Spawns bullet(s) based on current active power-up state.</summary>
     public void TryFire()
     {
-        if (!_state.IsPlaying || _state.IsGameOver || _state.IsPaused) return;
+        if (!_state.IsPlaying || _state.IsGameOver || _state.IsPaused || _state.IsFinalDeathAnimating) return;
         const int bulletW = GameConfig.Player.BulletWidth;
         const int bulletH = GameConfig.Player.BulletHeight;
         int pierce = _state.GetPierceCount();
@@ -219,6 +219,19 @@ public sealed class GameManager
         if (_state.IsLifeLost) return;
 
         Player.SetBottom(playHeight);
+        if (_state.IsFinalDeathAnimating)
+        {
+            bool finalDeathEnded = _state.TickFinalDeathAnimation();
+            float simDt = deltaSeconds * _state.SimulationTimeScale;
+            _entities.UpdateParticles(simDt);
+            _entities.UpdateFragments(simDt);
+            _difficulty.Tick();
+            if (finalDeathEnded)
+                _state.ApplyGameOverShakeAndClearMuzzle();
+            return;
+        }
+
+        float simDtMain = deltaSeconds * _state.SimulationTimeScale;
         if (!_state.IsGameOver)
         {
             long stepNow = Environment.TickCount64;
@@ -236,15 +249,18 @@ public sealed class GameManager
             }
             ProcessFiring(wantFire);
 
-            _entities.UpdateBullets(deltaSeconds);
-            _entities.UpdateParticles(deltaSeconds);
-            _entities.UpdateFragments(deltaSeconds);
-            _entities.UpdatePowerUps(playHeight, deltaSeconds);
+            _entities.UpdateBullets(simDtMain);
+            _entities.UpdateParticles(simDtMain);
+            _entities.UpdateFragments(simDtMain);
+            _entities.UpdatePowerUps(playHeight, simDtMain);
             CollectPowerUps(clientWidth, playHeight);
             if (_state.TickBombFuse())
                 _collisions.ExecuteBombExplosionAt(_state.BombIndicatorX, _state.BombIndicatorY);
             SyncBarSpeedTargetForActiveEffects(force: false);
-            _entities.UpdateBars(deltaSeconds);
+            float slowLerp = _state.ActivePowerUp == PowerUpType.SlowMotion && _state.PowerUpTimerFrames > 0
+                ? GameConfig.PowerUps.SlowMotionSpeedLerpFactor
+                : -1f;
+            _entities.UpdateBars(simDtMain, slowLerp);
 
             for (int i = _entities.Bars.Count - 1; i >= 0; i--)
             {
@@ -265,7 +281,16 @@ public sealed class GameManager
                     bool depleted = _state.LoseLife();
                     if (depleted)
                     {
-                        _state.ApplyGameOverShakeAndClearMuzzle();
+                        _entities.Bars.Clear();
+                        _entities.Bullets.Clear();
+                        _entities.PowerUps.Clear();
+                        _entities.Explosions.Clear();
+                        _entities.Particles.Clear();
+                        _collisions.ClearBombKillQueue();
+                        SpawnCannonDestructionFragments();
+                        _state.BeginFinalDeathAnimation();
+                        _state.MuzzleFlashFrames = 0;
+                        _state.ShakeUntilTickMs = Environment.TickCount64 + GameConfig.Effects.FinalDeathShakeMs;
                         GameAudio.PlayGameOver();
                     }
                     else
@@ -277,12 +302,160 @@ public sealed class GameManager
             }
 
             _collisions.Resolve(GameConfig.Scoring.DamagePerHit);
-            _entities.UpdateExplosions(deltaSeconds);
+            _entities.UpdateExplosions(simDtMain);
             _collisions.TickPendingBombKills();
-            if (!_state.IsGameOver) _spawn.TrySpawn(clientWidth);
+            if (!_state.IsGameOver && !_state.IsFinalDeathAnimating) _spawn.TrySpawn(clientWidth);
         }
 
         _difficulty.Tick();
+    }
+
+    /// <summary>Big last-life cannon breakup: many fragments + particle burst (reuses <see cref="Fragment"/> / <see cref="Particle"/>).</summary>
+    private void SpawnCannonDestructionFragments()
+    {
+        Rectangle hull = Player.GetBounds();
+        float cx = hull.Left + hull.Width * 0.5f;
+        float cy = hull.Top + hull.Height * 0.5f;
+        int hx = hull.Left;
+        int hy = hull.Top;
+        int hw = hull.Width;
+        int hh = hull.Height;
+        float grav = GameConfig.Effects.CannonDestructionFragmentGravity;
+
+        EnsureFragmentHeadroom(GameConfig.Effects.CannonDestructionFragmentCount);
+
+        void AddFragment(float px, float py, float vx, float vy, int fw, int fh, int life, Color color, bool highlight) =>
+            _entities.Fragments.Add(new Fragment(px, py, vx, vy, fw, fh, life, grav, color, highlight));
+
+        void AddRadialFrom(float px, float py, float speedMin, float speedMax, int fwMin, int fwMax, int fhMin, int fhMax, int lifeMin, int lifeMax, Color color, bool highlight, float extraSpin = 2.8f)
+        {
+            float dx = px - cx;
+            float dy = py - cy;
+            float len = MathF.Sqrt(dx * dx + dy * dy);
+            if (len < 0.001f)
+            {
+                dx = (float)(_random.NextDouble() * 2f - 1f);
+                dy = (float)(_random.NextDouble() * 2f - 1f);
+                len = MathF.Sqrt(dx * dx + dy * dy);
+            }
+
+            float nx = dx / len;
+            float ny = dy / len;
+            float spd = speedMin + (float)_random.NextDouble() * (speedMax - speedMin);
+            float vx = nx * spd + (float)(_random.NextDouble() * extraSpin - extraSpin * 0.5f);
+            float vy = ny * spd + (float)(_random.NextDouble() * extraSpin - extraSpin * 0.5f);
+            int fw = _random.Next(fwMin, fwMax + 1);
+            int fh = _random.Next(fhMin, fhMax + 1);
+            int life = _random.Next(lifeMin, lifeMax + 1);
+            AddFragment(px, py, vx, vy, fw, fh, life, color, highlight);
+        }
+
+        // Omnidirectional spark cloud at cannon center (reads big on screen).
+        int pCount = GameConfig.Effects.CannonDestructionParticleCount;
+        for (int i = 0; i < pCount; i++)
+        {
+            double ang = _random.NextDouble() * Math.PI * 2d;
+            double spd = 4d + _random.NextDouble() * 10d;
+            float vx = (float)(Math.Cos(ang) * spd) + (float)(_random.NextDouble() * 2.4 - 1.2);
+            float vy = (float)(Math.Sin(ang) * spd) + (float)(_random.NextDouble() * 2.4 - 1.2);
+            Color pc = _random.Next(5) switch
+            {
+                0 => Color.FromArgb(255, 120, 255, 250),
+                1 => Color.FromArgb(255, 255, 248, 140),
+                2 => Color.FromArgb(255, 255, 200, 90),
+                3 => Color.FromArgb(255, 255, 255, 230),
+                _ => Color.FromArgb(255, 80, 220, 255)
+            };
+            float ox = cx + (float)(_random.NextDouble() * hw - hw * 0.5f);
+            float oy = cy + (float)(_random.NextDouble() * hh - hh * 0.5f);
+            _entities.Particles.Add(new Particle(ox, oy, vx, vy, _random.Next(20, 38), pc));
+        }
+
+        // Large hull shards: 4×3 grid across the whole cannon bounds.
+        for (int row = 0; row < 3; row++)
+        {
+            for (int col = 0; col < 4; col++)
+            {
+                int zw = Math.Max(2, hw / 4);
+                int zh = Math.Max(2, hh / 3);
+                var zone = new Rectangle(hx + col * zw, hy + row * zh, zw, zh);
+                int r = Math.Clamp(22 + _random.Next(-10, 11), 0, 255);
+                int gg = Math.Clamp(44 + _random.Next(-12, 13), 0, 255);
+                int b = Math.Clamp(78 + _random.Next(-12, 13), 0, 255);
+                float px = zone.Left + (float)_random.NextDouble() * Math.Max(1, zone.Width);
+                float py = zone.Top + (float)_random.NextDouble() * Math.Max(1, zone.Height);
+                AddRadialFrom(
+                    px,
+                    py,
+                    GameConfig.Effects.CannonDestructionChunkSpeedMin,
+                    GameConfig.Effects.CannonDestructionChunkSpeedMax,
+                    7,
+                    15,
+                    6,
+                    14,
+                    52,
+                    78,
+                    Color.FromArgb(250, r, gg, b),
+                    false,
+                    extraSpin: 3.2f);
+            }
+        }
+
+        // Radial ring: pieces shoot in all directions from the hull centerline.
+        const int radial = 18;
+        for (int i = 0; i < radial; i++)
+        {
+            double baseAng = i * (Math.PI * 2d / radial) + (_random.NextDouble() * 0.35 - 0.175);
+            float px = cx + (float)(Math.Cos(baseAng) * (hw * 0.12f + _random.NextDouble() * 4));
+            float py = cy + (float)(Math.Sin(baseAng) * (hh * 0.35f + _random.NextDouble() * 3));
+            int r = Math.Clamp(36 + _random.Next(-14, 15), 0, 255);
+            int gg = Math.Clamp(110 + _random.Next(-18, 19), 0, 255);
+            int b = Math.Clamp(150 + _random.Next(-18, 19), 0, 255);
+            AddRadialFrom(
+                px,
+                py,
+                GameConfig.Effects.CannonDestructionBlastSpeedMin,
+                GameConfig.Effects.CannonDestructionBlastSpeedMax,
+                5,
+                12,
+                5,
+                12,
+                48,
+                86,
+                Color.FromArgb(252, r, gg, b),
+                highlight: i == radial / 2,
+                extraSpin: 3.6f);
+        }
+
+        // Fast micro-shards (high speed, small size) for “explosion spray”.
+        for (int i = 0; i < 10; i++)
+        {
+            double ang = _random.NextDouble() * Math.PI * 2d;
+            float spd = GameConfig.Effects.CannonDestructionBlastSpeedMin +
+                (float)_random.NextDouble() * (GameConfig.Effects.CannonDestructionBlastSpeedMax - GameConfig.Effects.CannonDestructionBlastSpeedMin + 4f);
+            float vx = (float)Math.Cos(ang) * spd;
+            float vy = (float)Math.Sin(ang) * spd;
+            float px = cx + (float)(_random.NextDouble() * 10 - 5);
+            float py = cy + (float)(_random.NextDouble() * 8 - 4);
+            AddFragment(
+                px,
+                py,
+                vx + (float)(_random.NextDouble() * 3 - 1.5f),
+                vy + (float)(_random.NextDouble() * 3 - 1.5f),
+                _random.Next(3, 7),
+                _random.Next(3, 7),
+                _random.Next(40, 62),
+                Color.FromArgb(245, 255, 230, 150),
+                false);
+        }
+    }
+
+    private void EnsureFragmentHeadroom(int incoming)
+    {
+        int overflow = _entities.Fragments.Count + incoming - GameConfig.Effects.MaxActiveFragments;
+        if (overflow <= 0) return;
+        int remove = Math.Min(overflow, _entities.Fragments.Count);
+        _entities.Fragments.RemoveRange(0, remove);
     }
 
     /// <summary>Applies life-lost transition effects and temporary pacing relief.</summary>
@@ -304,7 +477,8 @@ public sealed class GameManager
         int effective = _state.GetEffectiveBarSpeed();
         if (!force && effective == _lastAppliedBarSpeed) return;
         _lastAppliedBarSpeed = effective;
-        foreach (var bar in _entities.Bars) bar.SetTargetMoveSpeed(effective);
+        float sm = _state.SlowMotionBarSpeedScale;
+        foreach (var bar in _entities.Bars) bar.SetTargetMoveSpeed(effective, sm);
     }
 
     /// <summary>Collects intersecting power-ups and activates their effects.</summary>

@@ -9,6 +9,7 @@ public sealed class DifficultySystem
     private readonly EntityManager _entities;
     private int _cachedSegmentStartIdx;
     private int _lastAppliedEffectiveBarSpeed = int.MinValue;
+    private float _lastSlowMotionBarSpeedScale = -1f;
 
     public DifficultySystem(GameState state, EntityManager entities)
     {
@@ -29,7 +30,7 @@ public sealed class DifficultySystem
     /// </summary>
     public void Tick()
     {
-        if (!_state.IsPlaying || _state.IsGameOver) return;
+        if (!_state.IsPlaying || _state.IsGameOver || _state.IsFinalDeathAnimating) return;
         ApplyTable(force: false);
     }
 
@@ -56,10 +57,12 @@ public sealed class DifficultySystem
         _state.DynamicMaxBarsOnScreen = SmoothInt(_state.DynamicMaxBarsOnScreen, targetMaxBars, force ? 1f : GameConfig.Difficulty.MaxBarsBlend);
 
         int effectiveSpeed = _state.GetEffectiveBarSpeed();
-        if (force || effectiveSpeed != _lastAppliedEffectiveBarSpeed)
+        float sm = _state.SlowMotionBarSpeedScale;
+        if (force || effectiveSpeed != _lastAppliedEffectiveBarSpeed || MathF.Abs(sm - _lastSlowMotionBarSpeedScale) > 0.001f)
         {
             _lastAppliedEffectiveBarSpeed = effectiveSpeed;
-            foreach (var b in _entities.Bars) b.SetTargetMoveSpeed(effectiveSpeed);
+            _lastSlowMotionBarSpeedScale = sm;
+            foreach (var b in _entities.Bars) b.SetTargetMoveSpeed(effectiveSpeed, sm);
         }
     }
 

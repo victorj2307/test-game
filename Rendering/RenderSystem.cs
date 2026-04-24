@@ -13,11 +13,26 @@ namespace Game.Rendering;
 /// </summary>
 public sealed class RenderSystem
 {
-    private static readonly Brush PlayerBrush = new SolidBrush(Color.FromArgb(40, 220, 255));
-    private static readonly Brush MuzzlePortBrush = new SolidBrush(Color.FromArgb(255, 230, 120));
-    private static readonly Brush BulletBrushStatic = new SolidBrush(Color.FromArgb(255, 250, 200));
+    private static readonly Brush MuzzlePortBrush = new SolidBrush(Color.FromArgb(255, 220, 190, 90));
+    private static readonly SolidBrush CannonSilhouetteGlowBrush = new(Color.FromArgb(48, 0, 200, 255));
+    private static readonly SolidBrush CannonBaseBrush = new(Color.FromArgb(255, 8, 18, 42));
+    private static readonly SolidBrush CannonMidBrush = new(Color.FromArgb(255, 12, 34, 56));
+    private static readonly SolidBrush CannonBarrelBrush = new(Color.FromArgb(255, 14, 40, 62));
+    private static readonly SolidBrush CannonBarrelTipGlowBrush = new(Color.FromArgb(90, 0, 255, 240));
+    private static readonly SolidBrush CannonBarrelTipBrush = new(Color.FromArgb(255, 120, 255, 245));
+    private static readonly SolidBrush CannonCoreGlowBrush = new(Color.FromArgb(110, 255, 170, 40));
+    private static readonly SolidBrush CannonCoreSolidBrush = new(Color.FromArgb(255, 255, 215, 70));
+    private static readonly SolidBrush CannonCoreFlashBrush = new(Color.FromArgb(255, 255, 255, 220));
+    private static readonly Pen CannonNeonPen = new(Color.FromArgb(255, 48, 255, 230), 1.5f) { LineJoin = LineJoin.Round };
+    private static readonly SolidBrush BulletOuterGlowBrush = new(Color.FromArgb(70, 255, 230, 60));
+    private static readonly SolidBrush BulletCoreBrush = new(Color.FromArgb(255, 255, 252, 120));
+    private static readonly SolidBrush BulletTrailNearBrush = new(Color.FromArgb(50, 255, 240, 140));
+    private static readonly SolidBrush BulletTrailFarBrush = new(Color.FromArgb(30, 180, 230, 255));
+    private static readonly SolidBrush BulletTrailPierceNearBrush = new(Color.FromArgb(55, 240, 120, 255));
+    private static readonly SolidBrush BulletTrailPierceFarBrush = new(Color.FromArgb(35, 200, 80, 255));
+    private static readonly SolidBrush PierceBulletOuterGlowBrush = new(Color.FromArgb(95, 200, 50, 255));
     private static readonly Brush PierceBulletCore = new SolidBrush(Color.FromArgb(255, 255, 210, 255));
-    private static readonly Brush PierceBulletGlow = new SolidBrush(Color.FromArgb(120, 200, 60, 255));
+    private static readonly Brush PierceBulletGlow = new SolidBrush(Color.FromArgb(140, 210, 70, 255));
     private static readonly Brush TextBrush = Brushes.White;
     private static readonly Brush SubtleTextBrush = new SolidBrush(Color.Silver);
     private static readonly Brush GoBrush = new SolidBrush(Color.OrangeRed);
@@ -32,10 +47,7 @@ public sealed class RenderSystem
     private readonly SolidBrush _particleBrush = new(Color.White);
     private static readonly SolidBrush PowerUpBrush = new(Color.White);
     private static readonly SolidBrush FragmentBrush = new(Color.White);
-    private readonly Pen _bulletTrailPen = new(Color.FromArgb(55, 180, 230, 255), 1.5f);
-    private readonly Pen _pierceTrailPen = new(Color.FromArgb(95, 220, 80, 255), 2.2f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-    private readonly Pen _pierceTrailInnerPen = new(Color.FromArgb(55, 255, 200, 255), 1.1f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-    private readonly Pen _bulletAimPen = new(Color.FromArgb(255, 200, 140, 60), 2.25f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+    private static readonly Pen BulletAimPen = new(Color.FromArgb(255, 210, 160, 90), 2.25f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
     // GDI resource caches reduce repeated allocations in hot draw paths.
     private static readonly Dictionary<string, Font> FontCache = new();
     private static readonly LinkedList<string> FontLru = new();
@@ -167,45 +179,20 @@ public sealed class RenderSystem
         DrawExplosionRings(g, entities.Explosions);
 
         foreach (var bullet in entities.Bullets)
-        {
-            int cx = bullet.X + bullet.Width / 2;
-            int bottom = bullet.Y + bullet.Height;
-            if (bullet.IsPiercingVisual)
-            {
-                g.DrawLine(_pierceTrailPen, cx, bottom + 14, cx, bottom);
-                g.DrawLine(_pierceTrailInnerPen, cx, bottom + 12, cx, bottom + 2);
-            }
-            else
-            {
-                g.DrawLine(_bulletTrailPen, cx, bottom + 12, cx, bottom);
-            }
-        }
+            DrawBulletTrails(g, bullet);
         foreach (var bullet in entities.Bullets)
-        {
-            Rectangle r = bullet.GetBounds();
-            if (bullet.IsPiercingVisual)
-            {
-                g.FillRectangle(PierceBulletGlow, r.X - 1, r.Y - 1, r.Width + 2, r.Height + 2);
-                g.FillRectangle(PierceBulletCore, r);
-            }
-            else
-            {
-                g.FillRectangle(BulletBrushStatic, r);
-            }
-        }
+            DrawBulletBody(g, bullet);
 
-        g.FillRectangle(PlayerBrush, player.GetBounds());
-        Rectangle muzzle = player.GetMuzzlePortRect();
-        g.FillRectangle(MuzzlePortBrush, muzzle);
-        int muzzleX = player.MuzzleTopCenter.X;
-        g.DrawLine(_bulletAimPen, muzzleX, muzzle.Top, muzzleX, muzzle.Top - 7);
-        if (state.MuzzleFlashFrames > 0)
+        if (!state.IsFinalDeathAnimating)
         {
-            var flash = GetCachedBrush(Color.FromArgb(220, 255, 255, 255));
-            g.FillEllipse(flash, muzzleX - 10, muzzle.Top - 14, 20, 16);
+            int recoilDy = state.MuzzleFlashFrames > 0 ? (state.MuzzleFlashFrames >= 2 ? 2 : 1) : 0;
+            GraphicsState cannonState = g.Save();
+            // Negative Y: brief kick upward (weapon silhouette jumps toward muzzle).
+            g.TranslateTransform(0, -recoilDy);
+            DrawPlayerCannon(g, player, state);
+            DrawShieldPlayerFx(g, player, state);
+            g.Restore(cannonState);
         }
-
-        DrawShieldPlayerFx(g, player, state);
 
         if (state.ShowLeaderboard)
         {
@@ -221,10 +208,17 @@ public sealed class RenderSystem
         {
             DrawHud(g, uiFont, clientWidth, state);
             DrawNewBestBanner(g, uiFont, clientWidth, state);
-            if (state.IsDevMode && state.IsPlaying && !state.IsGameOver)
+            if (state.IsDevMode && state.IsPlaying && !state.IsGameOver && !state.IsFinalDeathAnimating)
                 DrawDevModeOverlay(g, uiFont, clientWidth, playHeight, state);
 
             DrawBombScreenFlash(g, clientWidth, playHeight, state);
+
+            if (state.FinalDeathFlashFrames > 0)
+            {
+                int flashAlpha = Math.Min(200, 28 + state.FinalDeathFlashFrames * 18);
+                var fdFlash = GetCachedBrush(Color.FromArgb(flashAlpha, 255, 252, 235));
+                g.FillRectangle(fdFlash, 0, 0, clientWidth, playHeight);
+            }
 
             if (state.LifeLostFlashFrames > 0)
             {
@@ -363,6 +357,143 @@ public sealed class RenderSystem
         int warm = (int)(200 + 40 * t);
         var flashBr = GetCachedBrush(Color.FromArgb(alpha, 255, 255, warm));
         g.FillRectangle(flashBr, 0, 0, clientWidth, playHeight);
+    }
+
+    private static void DrawBulletTrails(Graphics g, Bullet bullet)
+    {
+        Rectangle r = bullet.GetBounds();
+        int cx = r.X + r.Width / 2;
+        int bottom = r.Y + r.Height;
+        if (bullet.IsPiercingVisual)
+        {
+            int tw = Math.Max(r.Width + 3, 7);
+            int x = cx - tw / 2;
+            g.FillRectangle(BulletTrailPierceNearBrush, x, bottom + 3, tw, 3);
+            g.FillRectangle(BulletTrailPierceFarBrush, x + 1, bottom + 8, tw - 2, 4);
+        }
+        else
+        {
+            int tw = Math.Max(r.Width + 4, 8);
+            int x = cx - tw / 2;
+            g.FillRectangle(BulletTrailNearBrush, x, bottom + 2, tw, 3);
+            g.FillRectangle(BulletTrailFarBrush, x + 1, bottom + 7, tw - 2, 3);
+        }
+    }
+
+    private static void DrawBulletBody(Graphics g, Bullet bullet)
+    {
+        Rectangle r = bullet.GetBounds();
+        if (bullet.IsPiercingVisual)
+        {
+            Rectangle outer = Rectangle.Inflate(r, 3, 3);
+            g.FillRectangle(PierceBulletOuterGlowBrush, outer);
+            Rectangle mid = Rectangle.Inflate(r, 1, 1);
+            g.FillRectangle(PierceBulletGlow, mid);
+            g.FillRectangle(PierceBulletCore, r);
+            int capH = Math.Max(4, r.Width / 2 + 2);
+            g.FillEllipse(PierceBulletCore, r.X - 1, r.Y - 2, r.Width + 2, capH + 2);
+        }
+        else
+        {
+            Rectangle outer = Rectangle.Inflate(r, 2, 2);
+            g.FillRectangle(BulletOuterGlowBrush, outer);
+            g.FillRectangle(BulletCoreBrush, r);
+            int capH = Math.Max(4, r.Width / 2 + 2);
+            g.FillEllipse(BulletCoreBrush, r.X - 1, r.Y - 2, r.Width + 2, capH + 2);
+        }
+    }
+
+    /// <summary>
+    /// Composed cannon: wide base, narrower mid, thin tall barrel; energy core with two-pass glow; neon outlines.
+    /// All rectangles; brushes/pens are static. Optional idle pulse on core via glow inset; shoot flash uses <see cref="GameState.MuzzleFlashFrames"/>.
+    /// </summary>
+    private static void DrawPlayerCannon(Graphics g, Player player, GameState state)
+    {
+        Rectangle hull = player.GetBounds();
+        Rectangle glowRect = Rectangle.Inflate(hull, 2, 2);
+        g.FillRectangle(CannonSilhouetteGlowBrush, glowRect);
+
+        int pw = hull.Width;
+        int ph = hull.Height;
+        int px = hull.X;
+        int py = hull.Y;
+
+        // Split hull height (top → bottom): thin tall barrel, mid collar, wide base.
+        int baseH = (ph * 7 + 9) / 18;
+        if (baseH < 6) baseH = 6;
+        int barrelH = (ph * 6 + 9) / 18;
+        if (barrelH < 5) barrelH = 5;
+        int midH = ph - baseH - barrelH;
+        if (midH < 3)
+        {
+            midH = 3;
+            barrelH = ph - baseH - midH;
+            if (barrelH < 4) barrelH = 4;
+        }
+
+        int baseW = pw * 5 / 6;
+        baseW = Math.Clamp(baseW, pw - 8, pw - 2);
+        int baseX = px + (pw - baseW) / 2;
+        int baseY = py + ph - baseH;
+        var baseRect = new Rectangle(baseX, baseY, baseW, baseH);
+
+        int midW = baseW - 6;
+        midW = Math.Clamp(midW, 18, pw - 4);
+        int midX = px + (pw - midW) / 2;
+        int midY = baseY - midH;
+        var midRect = new Rectangle(midX, midY, midW, midH);
+
+        int barrelW = pw / 7;
+        barrelW = Math.Clamp(barrelW, 5, 8);
+        int barrelX = px + (pw - barrelW) / 2;
+        int barrelY = midY - barrelH;
+        var barrelRect = new Rectangle(barrelX, barrelY, barrelW, barrelH);
+
+        g.FillRectangle(CannonBaseBrush, baseRect);
+        g.FillRectangle(CannonMidBrush, midRect);
+        g.FillRectangle(CannonBarrelBrush, barrelRect);
+
+        // Energy core (centered in mid): outer soft glow, then solid core.
+        const int coreW = 6;
+        const int coreH = 4;
+        int coreX = midX + (midW - coreW) / 2;
+        int coreY = midY + (midH - coreH) / 2;
+        var coreRect = new Rectangle(coreX, coreY, coreW, coreH);
+        int pulsePad = ((state.ElapsedFrames >> 3) & 1) + 1;
+        var coreGlow = Rectangle.Inflate(coreRect, pulsePad, pulsePad);
+        g.FillRectangle(CannonCoreGlowBrush, coreGlow);
+        if (state.MuzzleFlashFrames > 0)
+            g.FillRectangle(CannonCoreFlashBrush, coreRect);
+        else
+            g.FillRectangle(CannonCoreSolidBrush, coreRect);
+
+        // Barrel tip: two-pass glow on top rows (rectangles only).
+        var tipGlow = new Rectangle(barrelX - 1, barrelY, barrelW + 2, 3);
+        g.FillRectangle(CannonBarrelTipGlowBrush, tipGlow);
+        g.FillRectangle(CannonBarrelTipBrush, barrelX, barrelY + 1, barrelW, 2);
+
+        g.DrawRectangle(CannonNeonPen, baseRect.X, baseRect.Y, baseRect.Width - 1, baseRect.Height - 1);
+        g.DrawRectangle(CannonNeonPen, midRect.X, midRect.Y, midRect.Width - 1, midRect.Height - 1);
+        g.DrawRectangle(CannonNeonPen, barrelRect.X, barrelRect.Y, barrelRect.Width - 1, barrelRect.Height - 1);
+
+        if (state.MuzzleFlashFrames > 0)
+        {
+            var pulsePen = GetCachedPen(Color.FromArgb(255, 220, 255, 255), 2.2f, join: LineJoin.Round);
+            g.DrawRectangle(pulsePen, baseRect.X, baseRect.Y, baseRect.Width - 1, baseRect.Height - 1);
+            g.DrawRectangle(pulsePen, midRect.X, midRect.Y, midRect.Width - 1, midRect.Height - 1);
+            g.DrawRectangle(pulsePen, barrelRect.X, barrelRect.Y, barrelRect.Width - 1, barrelRect.Height - 1);
+        }
+
+        Rectangle muzzle = player.GetMuzzlePortRect();
+        g.FillRectangle(MuzzlePortBrush, muzzle);
+        int muzzleX = player.MuzzleTopCenter.X;
+        g.DrawLine(BulletAimPen, muzzleX, muzzle.Top, muzzleX, muzzle.Top - 7);
+
+        if (state.MuzzleFlashFrames > 0)
+        {
+            var flash = GetCachedBrush(Color.FromArgb(235, 255, 255, 255));
+            g.FillRectangle(flash, muzzleX - 8, muzzle.Top - 12, 16, 12);
+        }
     }
 
     /// <summary>Cyan shield ring while active; pickup pulse; block burst ring + flash.</summary>
@@ -943,7 +1074,8 @@ public sealed class RenderSystem
     {
         foreach (var f in fragments)
         {
-            int alpha = Math.Clamp((int)(f.BaseColor.A * f.LifeT), 18, 255);
+            int minA = f.IsHighlight ? 115 : 18;
+            int alpha = Math.Clamp((int)(f.BaseColor.A * f.LifeT), minA, 255);
             FragmentBrush.Color = Color.FromArgb(alpha, f.BaseColor.R, f.BaseColor.G, f.BaseColor.B);
             g.FillRectangle(FragmentBrush, f.X, f.Y, f.Width, f.Height);
         }
