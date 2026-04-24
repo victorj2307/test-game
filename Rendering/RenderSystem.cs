@@ -19,6 +19,19 @@ public sealed class RenderSystem
     private static readonly Pen DebugPenPlayer = new(Color.Lime) { Width = 1.5f };
     private static readonly Pen DebugPenEnemy = new(Color.Magenta) { Width = 1f };
     private static readonly Pen DebugPenBullet = new(Color.Cyan) { Width = 1f };
+    private static readonly Font Ui8RegularFont = new("Segoe UI", 8f, FontStyle.Regular, GraphicsUnit.Point);
+    private static readonly Font Ui7BoldFont = new("Segoe UI", 7f, FontStyle.Bold, GraphicsUnit.Point);
+
+    private readonly SolidBrush _barBrush = new(Color.White);
+    private readonly Pen _specialGlowPen = new(Color.White, 1.6f);
+    private readonly SolidBrush _particleBrush = new(Color.White);
+    private static readonly SolidBrush PowerUpBrush = new(Color.White);
+    private static readonly SolidBrush FragmentBrush = new(Color.White);
+    private readonly Pen _bulletTrailPen = new(Color.FromArgb(55, 180, 230, 255), 1.5f);
+    private readonly Pen _pierceTrailPen = new(Color.FromArgb(95, 220, 80, 255), 2.2f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+    private readonly Pen _pierceTrailInnerPen = new(Color.FromArgb(55, 255, 200, 255), 1.1f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+    private readonly Pen _bulletAimPen = new(Color.FromArgb(255, 200, 140, 60), 2.25f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+    private static readonly Dictionary<string, Font> FontCache = new();
 
     private static readonly float[] BombShakeOx =
     {
@@ -79,10 +92,10 @@ public sealed class RenderSystem
         {
             if (bar.GetBounds().Bottom >= dangerY) { barPastDanger = true; break; }
         }
-        using (var dangerPen = new Pen(barPastDanger ? Color.FromArgb(180, 255, 120, 60) : Color.FromArgb(70, 80, 110, 130), barPastDanger ? 2f : 1f))
-        {
-            g.DrawLine(dangerPen, 0, dangerY, clientWidth, dangerY);
-        }
+        Color dangerColor = barPastDanger ? Color.FromArgb(180, 255, 120, 60) : Color.FromArgb(70, 80, 110, 130);
+        _specialGlowPen.Color = dangerColor;
+        _specialGlowPen.Width = barPastDanger ? 2f : 1f;
+        g.DrawLine(_specialGlowPen, 0, dangerY, clientWidth, dangerY);
 
         using var barOutline = new Pen(Color.FromArgb(110, 0, 0, 0), 1f);
         foreach (var bar in entities.Bars)
@@ -95,20 +108,21 @@ public sealed class RenderSystem
                 int pulsePad = bar.PierceFlash ? 2 : 1;
                 r = Rectangle.Inflate(r, pulsePad, pulsePad);
             }
-            using (var br = new SolidBrush(GetBarDrawColor(bar)))
-                g.FillRectangle(br, r);
+            _barBrush.Color = GetBarDrawColor(bar);
+            g.FillRectangle(_barBrush, r);
             if (bar.IsSpecial)
             {
-                using var specialGlow = new Pen(GetSpecialOutlineColor(state.ElapsedFrames), 1.6f);
-                g.DrawRectangle(specialGlow, r.X - 1, r.Y - 1, r.Width + 1, r.Height + 1);
+                _specialGlowPen.Color = GetSpecialOutlineColor(state.ElapsedFrames);
+                _specialGlowPen.Width = 1.6f;
+                g.DrawRectangle(_specialGlowPen, r.X - 1, r.Y - 1, r.Width + 1, r.Height + 1);
             }
             g.DrawRectangle(barOutline, r.X, r.Y, r.Width - 1, r.Height - 1);
         }
 
         foreach (var p in entities.Particles)
         {
-            using var br = new SolidBrush(p.Color);
-            g.FillRectangle(br, p.X, p.Y, 2, 2);
+            _particleBrush.Color = p.Color;
+            g.FillRectangle(_particleBrush, p.X, p.Y, 2, 2);
         }
         DrawFragments(g, entities.Fragments);
 
@@ -125,15 +139,12 @@ public sealed class RenderSystem
             int bottom = bullet.Y + bullet.Height;
             if (bullet.IsPiercingVisual)
             {
-                using var trailP = new Pen(Color.FromArgb(95, 220, 80, 255), 2.2f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-                g.DrawLine(trailP, cx, bottom + 14, cx, bottom);
-                using var trailInner = new Pen(Color.FromArgb(55, 255, 200, 255), 1.1f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-                g.DrawLine(trailInner, cx, bottom + 12, cx, bottom + 2);
+                g.DrawLine(_pierceTrailPen, cx, bottom + 14, cx, bottom);
+                g.DrawLine(_pierceTrailInnerPen, cx, bottom + 12, cx, bottom + 2);
             }
             else
             {
-                using var trailPen = new Pen(Color.FromArgb(55, 180, 230, 255), 1.5f);
-                g.DrawLine(trailPen, cx, bottom + 12, cx, bottom);
+                g.DrawLine(_bulletTrailPen, cx, bottom + 12, cx, bottom);
             }
         }
         foreach (var bullet in entities.Bullets)
@@ -154,12 +165,7 @@ public sealed class RenderSystem
         Rectangle muzzle = player.GetMuzzlePortRect();
         g.FillRectangle(MuzzlePortBrush, muzzle);
         int muzzleX = player.MuzzleTopCenter.X;
-        using (var aim = new Pen(Color.FromArgb(255, 200, 140, 60), 2.25f))
-        {
-            aim.StartCap = LineCap.Round;
-            aim.EndCap = LineCap.Round;
-            g.DrawLine(aim, muzzleX, muzzle.Top, muzzleX, muzzle.Top - 7);
-        }
+        g.DrawLine(_bulletAimPen, muzzleX, muzzle.Top, muzzleX, muzzle.Top - 7);
         if (state.MuzzleFlashFrames > 0)
         {
             using var flash = new SolidBrush(Color.FromArgb(220, 255, 255, 255));
@@ -199,10 +205,10 @@ public sealed class RenderSystem
             {
                 using (var overlay = new SolidBrush(Color.FromArgb(220, 0, 0, 0)))
                     g.FillRectangle(overlay, 0, 0, clientWidth, playHeight);
-                using var goFont = new Font(uiFont.FontFamily, uiFont.Size + 20, FontStyle.Bold, GraphicsUnit.Point);
+                var goFont = GetCachedFont(uiFont, uiFont.Size + 20f, FontStyle.Bold);
                 float cy = playHeight * 0.28f;
                 DrawCenteredText(g, "GAME OVER", goFont, GoBrush, clientWidth, cy);
-                using var statFont = new Font(uiFont.FontFamily, uiFont.Size + 2f, FontStyle.Bold, GraphicsUnit.Point);
+                var statFont = GetCachedFont(uiFont, uiFont.Size + 2f, FontStyle.Bold);
                 using var statBrush = new SolidBrush(Color.FromArgb(225, 238, 245));
                 DrawCenteredText(g, $"Final Score: {state.Score}", statFont, statBrush, clientWidth, cy + 64f);
                 DrawCenteredText(g, $"Best Score:  {state.HighScore}", statFont, statBrush, clientWidth, cy + 96f);
@@ -215,7 +221,7 @@ public sealed class RenderSystem
             {
                 using (var overlay = new SolidBrush(Color.FromArgb(165, 0, 0, 0)))
                     g.FillRectangle(overlay, 0, 0, clientWidth, playHeight);
-                using var lifeLostFont = new Font(uiFont.FontFamily, uiFont.Size + 10, FontStyle.Bold, GraphicsUnit.Point);
+                var lifeLostFont = GetCachedFont(uiFont, uiFont.Size + 10f, FontStyle.Bold);
                 const string msg = "LIFE LOST";
                 SizeF sz = g.MeasureString(msg, lifeLostFont);
                 float cx = (clientWidth - sz.Width) * 0.5f;
@@ -233,8 +239,8 @@ public sealed class RenderSystem
             {
                 using var overlay = new SolidBrush(Color.FromArgb(170, 0, 0, 0));
                 g.FillRectangle(overlay, 0, 0, clientWidth, playHeight);
-                using var pausedFont = new Font(uiFont.FontFamily, uiFont.Size + 18f, FontStyle.Bold, GraphicsUnit.Point);
-                using var hintFont = new Font(uiFont.FontFamily, uiFont.Size + 1f, FontStyle.Regular, GraphicsUnit.Point);
+                var pausedFont = GetCachedFont(uiFont, uiFont.Size + 18f, FontStyle.Bold);
+                var hintFont = GetCachedFont(uiFont, uiFont.Size + 1f, FontStyle.Regular);
                 using var hintBr = new SolidBrush(Color.FromArgb(220, 220, 225));
                 float cy = playHeight * 0.34f;
                 DrawCenteredText(g, "PAUSED", pausedFont, TextBrush, clientWidth, cy);
@@ -242,7 +248,7 @@ public sealed class RenderSystem
             }
             else if (!state.IsPlaying)
             {
-                using var title = new Font(uiFont.FontFamily, 22, FontStyle.Bold, GraphicsUnit.Point);
+                var title = GetCachedFont(uiFont, 22f, FontStyle.Bold);
                 const string t = "READY?";
                 SizeF tsz = g.MeasureString(t, title);
                 g.DrawString(t, title, TextBrush, (clientWidth - tsz.Width) * 0.5f, playHeight * 0.38f);
@@ -252,7 +258,7 @@ public sealed class RenderSystem
         }
         if (showDebug && !state.ShowLeaderboard)
         {
-            using var dbgFont = new Font(uiFont.FontFamily, 7.5f, FontStyle.Regular, GraphicsUnit.Point);
+            var dbgFont = GetCachedFont(uiFont, 7.5f, FontStyle.Regular);
             using var dbgBr = new SolidBrush(Color.FromArgb(130, 160, 170, 190));
             g.DrawString(
                 $"FPS {debugFps}  dt {state.LastDeltaSeconds * 1000f:0.#}ms  bars {entities.Bars.Count}  bul {entities.Bullets.Count}  ptcl {entities.Particles.Count}  boom {entities.Explosions.Count}  fuse {state.BombFuseFramesLeft}",
@@ -286,7 +292,7 @@ public sealed class RenderSystem
 
     private static void DrawDevModeOverlay(Graphics g, Font uiFont, int clientWidth, int playHeight, GameState state)
     {
-        using var font = new Font(uiFont.FontFamily, 7.5f, FontStyle.Bold, GraphicsUnit.Point);
+        var font = GetCachedFont(uiFont, 7.5f, FontStyle.Bold);
         using var accent = new SolidBrush(Color.FromArgb(255, 120, 255, 140));
         using var dim = new SolidBrush(Color.FromArgb(210, 200, 220, 210));
         // Sit above F1 debug line (drawn at playHeight - 28)
@@ -440,7 +446,7 @@ public sealed class RenderSystem
         const float x = 12f;
         const float y = 12f;
         using var labelBr = new SolidBrush(Color.FromArgb(170, 190, 205));
-        using var labelFont = new Font("Segoe UI", 8f, FontStyle.Regular, GraphicsUnit.Point);
+        var labelFont = Ui8RegularFont;
         g.DrawString("LIVES", labelFont, labelBr, x, y - 1);
         DrawLifeIcons(g, x + 46, y + 2, 3, 12, state.Lives);
     }
@@ -449,8 +455,8 @@ public sealed class RenderSystem
     {
         using var labelBr = new SolidBrush(Color.FromArgb(175, 190, 205));
         using var scoreBr = new SolidBrush(Color.FromArgb(235, 245, 255));
-        using var labelFont = new Font(uiFont.FontFamily, uiFont.Size - 1f, FontStyle.Regular, GraphicsUnit.Point);
-        using var scoreFont = new Font(uiFont.FontFamily, uiFont.Size + 6f, FontStyle.Bold, GraphicsUnit.Point);
+        var labelFont = GetCachedFont(uiFont, uiFont.Size - 1f, FontStyle.Regular);
+        var scoreFont = GetCachedFont(uiFont, uiFont.Size + 6f, FontStyle.Bold);
         string label = "SCORE";
         string value = state.Score.ToString();
         SizeF valueSize = g.MeasureString(value, scoreFont);
@@ -469,7 +475,7 @@ public sealed class RenderSystem
     private static void DrawBestScore(Graphics g, GameState state, Font uiFont, int clientWidth)
     {
         using var bestBr = new SolidBrush(Color.FromArgb(165, 176, 188));
-        using var bestFont = new Font(uiFont.FontFamily, uiFont.Size, FontStyle.Regular, GraphicsUnit.Point);
+        var bestFont = GetCachedFont(uiFont, uiFont.Size, FontStyle.Regular);
         string bestText = $"BEST {state.HighScore}";
         SizeF bestSize = g.MeasureString(bestText, bestFont);
         g.DrawString(bestText, bestFont, bestBr, clientWidth - bestSize.Width - 18f, 62f);
@@ -485,7 +491,7 @@ public sealed class RenderSystem
 
         using var back = new SolidBrush(Color.FromArgb(Math.Min(220, alpha), 40, 22, 0));
         using var text = new SolidBrush(Color.FromArgb(Math.Min(255, alpha + 20), 255, 210, 85));
-        using var font = new Font(uiFont.FontFamily, uiFont.Size + 5f, FontStyle.Bold, GraphicsUnit.Point);
+        var font = GetCachedFont(uiFont, uiFont.Size + 5f, FontStyle.Bold);
         const string msg = "NEW BEST!";
         SizeF sz = g.MeasureString(msg, font);
         float boxW = sz.Width + 24f;
@@ -500,8 +506,8 @@ public sealed class RenderSystem
         foreach (var p in powerUps)
         {
             Rectangle r = p.GetBounds();
-            using var br = new SolidBrush(GetPowerUpColor(p.Type));
-            g.FillEllipse(br, r);
+            PowerUpBrush.Color = GetPowerUpColor(p.Type);
+            g.FillEllipse(PowerUpBrush, r);
             using var pen = new Pen(Color.FromArgb(180, 0, 0, 0), 1f);
             g.DrawEllipse(pen, r);
         }
@@ -558,7 +564,7 @@ public sealed class RenderSystem
 
         string label = GetPowerUpHudLabel(t);
         using var labelBr = new SolidBrush(Color.FromArgb(248, 252, 255));
-        using var labelFont = new Font("Segoe UI", 7f, FontStyle.Bold, GraphicsUnit.Point);
+        var labelFont = Ui7BoldFont;
         SizeF labelSize = g.MeasureString(label, labelFont);
         float labelX = panelX + (panelW - labelSize.Width) * 0.5f;
         float labelY = iconY + sizeH + 2f;
@@ -728,7 +734,7 @@ public sealed class RenderSystem
         float panelY = Math.Max(24f, playHeight * 0.08f);
         DrawPanelFrame(g, panelX, panelY, panelW, panelH);
 
-        using var titleFont = new Font(uiFont.FontFamily, uiFont.Size + 3f, FontStyle.Bold, GraphicsUnit.Point);
+        var titleFont = GetCachedFont(uiFont, uiFont.Size + 3f, FontStyle.Bold);
         using var titleBr = new SolidBrush(Color.FromArgb(245, 230, 245, 255));
         DrawCenteredText(g, "FINAL RESULTS", titleFont, titleBr, clientWidth, panelY + 10f);
         using var separatorPen = new Pen(Color.FromArgb(170, 95, 205, 255), 1f);
@@ -746,7 +752,7 @@ public sealed class RenderSystem
 
     private static float DrawGameOverTitle(Graphics g, Font uiFont, int clientWidth, float startY)
     {
-        using var titleFont = new Font(uiFont.FontFamily, uiFont.Size + 16f, FontStyle.Bold, GraphicsUnit.Point);
+        var titleFont = GetCachedFont(uiFont, uiFont.Size + 16f, FontStyle.Bold);
         const string title = "GAME OVER";
         SizeF titleSize = g.MeasureString(title, titleFont);
         float y = startY;
@@ -798,7 +804,7 @@ public sealed class RenderSystem
         panelY = Math.Min(panelY, maxBottomY - panelH);
         DrawPanelFrame(g, panelX, panelY, panelW, panelH);
 
-        using var titleFont = new Font(uiFont.FontFamily, uiFont.Size + 4f, FontStyle.Bold, GraphicsUnit.Point);
+        var titleFont = GetCachedFont(uiFont, uiFont.Size + 4f, FontStyle.Bold);
         using var titleBr = new SolidBrush(Color.FromArgb(245, 230, 245, 255));
         DrawCenteredText(g, "LEADERBOARD", titleFont, titleBr, clientWidth, panelY + 12f);
         using var separatorPen = new Pen(Color.FromArgb(170, 95, 205, 255), 1f);
@@ -808,7 +814,7 @@ public sealed class RenderSystem
         float scoreRightX = panelX + panelW - 18f;
         float rowsY = panelY + 50f;
 
-        using var headerFont = new Font(uiFont.FontFamily, uiFont.Size - 0.5f, FontStyle.Bold, GraphicsUnit.Point);
+        var headerFont = GetCachedFont(uiFont, uiFont.Size - 0.5f, FontStyle.Bold);
         using var headerBr = new SolidBrush(Color.FromArgb(205, 200, 220, 238));
         g.DrawString("RANK  NAME", headerFont, headerBr, rankNameX, rowsY);
         string scoreHdr = "SCORE";
@@ -840,11 +846,7 @@ public sealed class RenderSystem
             string rankAndName = $"{i + 1,2}. {TrimName(entry.Name, 14)}";
             string scoreText = entry.Score.ToString();
 
-            using var rowFont = new Font(
-                uiFont.FontFamily,
-                uiFont.Size,
-                isCurrent || isTop ? FontStyle.Bold : FontStyle.Regular,
-                GraphicsUnit.Point);
+            var rowFont = GetCachedFont(uiFont, uiFont.Size, isCurrent || isTop ? FontStyle.Bold : FontStyle.Regular);
             using var rowBrush = new SolidBrush(
                 isCurrent
                     ? Color.FromArgb(255, 175, 245, 255)
@@ -881,7 +883,7 @@ public sealed class RenderSystem
         float y,
         bool isHighlight)
     {
-        using var rowFont = new Font(uiFont.FontFamily, uiFont.Size + 0.5f, isHighlight ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Point);
+        var rowFont = GetCachedFont(uiFont, uiFont.Size + 0.5f, isHighlight ? FontStyle.Bold : FontStyle.Regular);
         using var labelBr = new SolidBrush(Color.FromArgb(215, 210, 224, 240));
         using var valueBr = new SolidBrush(isHighlight ? Color.FromArgb(255, 255, 225, 120) : Color.FromArgb(240, 235, 242, 250));
         g.DrawString(label, rowFont, labelBr, labelX, y);
@@ -890,7 +892,7 @@ public sealed class RenderSystem
         if (isHighlight)
         {
             const string newBest = "NEW BEST";
-            using var tagFont = new Font(uiFont.FontFamily, uiFont.Size - 1f, FontStyle.Bold, GraphicsUnit.Point);
+            var tagFont = GetCachedFont(uiFont, uiFont.Size - 1f, FontStyle.Bold);
             using var tagBr = new SolidBrush(Color.FromArgb(255, 255, 210, 95));
             g.DrawString(newBest, tagFont, tagBr, labelX + 170f, y + 1f);
         }
@@ -909,8 +911,8 @@ public sealed class RenderSystem
         foreach (var f in fragments)
         {
             int alpha = Math.Clamp((int)(f.BaseColor.A * f.LifeT), 18, 255);
-            using var br = new SolidBrush(Color.FromArgb(alpha, f.BaseColor.R, f.BaseColor.G, f.BaseColor.B));
-            g.FillRectangle(br, f.X, f.Y, f.Width, f.Height);
+            FragmentBrush.Color = Color.FromArgb(alpha, f.BaseColor.R, f.BaseColor.G, f.BaseColor.B);
+            g.FillRectangle(FragmentBrush, f.X, f.Y, f.Width, f.Height);
         }
     }
 
@@ -1043,5 +1045,16 @@ public sealed class RenderSystem
             (int)(from.R + (to.R - from.R) * u),
             (int)(from.G + (to.G - from.G) * u),
             (int)(from.B + (to.B - from.B) * u));
+    }
+
+    private static Font GetCachedFont(Font baseFont, float size, FontStyle style)
+    {
+        string key = $"{baseFont.FontFamily.Name}|{size:0.##}|{(int)style}";
+        if (FontCache.TryGetValue(key, out Font? cached))
+            return cached;
+
+        var created = new Font(baseFont.FontFamily, size, style, GraphicsUnit.Point);
+        FontCache[key] = created;
+        return created;
     }
 }

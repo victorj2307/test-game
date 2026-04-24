@@ -1,5 +1,6 @@
 using System.Media;
 using System.Text;
+using System.Diagnostics;
 
 namespace Game.Audio;
 
@@ -43,8 +44,19 @@ public static class SoundGenerator
         {
             wav = BuildWavSine(f, ms);
         }
-        catch
+        catch (OutOfMemoryException ex)
         {
+            Debug.WriteLine($"[SoundGenerator] Out of memory building tone: {ex}");
+            return;
+        }
+        catch (ArgumentOutOfRangeException ex)
+        {
+            Debug.WriteLine($"[SoundGenerator] Invalid tone arguments: {ex}");
+            return;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[SoundGenerator] Unexpected error building tone: {ex}");
             return;
         }
 
@@ -59,8 +71,16 @@ public static class SoundGenerator
             player.Load();
             player.Play();
         }
-        catch
+        catch (InvalidOperationException ex)
         {
+            Debug.WriteLine($"[SoundGenerator] Invalid player state: {ex}");
+            HeldStreams[slot]?.Dispose();
+            HeldStreams[slot] = null;
+            wav.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[SoundGenerator] Unexpected playback error: {ex}");
             HeldStreams[slot]?.Dispose();
             HeldStreams[slot] = null;
             wav.Dispose();

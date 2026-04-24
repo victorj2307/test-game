@@ -105,7 +105,7 @@ public sealed class GameManager
     public void TogglePause()
     {
         if (!_state.IsPlaying || _state.IsGameOver || _state.IsLifeLost) return;
-        _state.IsPaused = !_state.IsPaused;
+        _state.SetPaused(!_state.IsPaused);
     }
 
     /// <summary>Creates player and resets per-run spawn countdown against the current viewport.</summary>
@@ -133,7 +133,7 @@ public sealed class GameManager
     /// <summary>Enters non-playing attract state and refreshes leaderboard cache.</summary>
     public void EnterAttractMode(int clientWidth, int playHeight)
     {
-        _state.IsPlaying = false;
+        _state.SetPlaying(false);
         _leaderboard = HighScoreStore.LoadLeaderboard(LeaderboardMaxEntries).ToList();
         ResetState(clientWidth, playHeight);
     }
@@ -141,7 +141,7 @@ public sealed class GameManager
     /// <summary>Starts a new playable run.</summary>
     public void StartNewGame(int clientWidth, int playHeight)
     {
-        _state.IsPlaying = true;
+        _state.SetPlaying(true);
         ResetState(clientWidth, playHeight);
     }
 
@@ -219,18 +219,19 @@ public sealed class GameManager
             SyncBarSpeedTargetForActiveEffects(force: false);
             _entities.UpdateBars();
 
-            foreach (var b in _entities.Bars.ToList())
+            for (int i = _entities.Bars.Count - 1; i >= 0; i--)
             {
+                var b = _entities.Bars[i];
                 if (b.GetBounds().Bottom >= playHeight)
                 {
                     if (_state.TryConsumeShield())
                     {
-                        _entities.Bars.Remove(b);
+                        _entities.Bars.RemoveAt(i);
                         continue;
                     }
                     if (_state.IsDevMode)
                     {
-                        _entities.Bars.Remove(b);
+                        _entities.Bars.RemoveAt(i);
                         _state.ShakeUntilTickMs = Environment.TickCount64 + GameConfig.Effects.FloorHitDevShakeMs;
                         continue;
                     }
@@ -265,7 +266,7 @@ public sealed class GameManager
         _collisions.ClearBombKillQueue();
         _state.ResetAfterLifeLost();
         _lastAppliedBarSpeed = -1;
-        _state.IsLifeLost = true;
+        _state.SetLifeLost(true);
         _state.ShakeUntilTickMs = Environment.TickCount64 + GameConfig.Effects.LifeLostShakeMs;
         _state.SpawnIntervalFrames = Math.Min(GameConfig.Spawn.InitialSpawnIntervalFrames, _state.SpawnIntervalFrames + GameConfig.Effects.SpawnRelaxAfterLifeLostFrames);
     }
@@ -312,7 +313,7 @@ public sealed class GameManager
     public void ContinueAfterLifeLost(int clientWidth, int playHeight)
     {
         if (!_state.IsLifeLost || _state.IsGameOver) return;
-        _state.IsLifeLost = false;
+        _state.SetLifeLost(false);
         Player.SetBottom(playHeight);
         Player.ClampAndSnapToGrid(clientWidth, PlayerStepPixels);
     }

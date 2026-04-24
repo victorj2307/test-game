@@ -1,6 +1,7 @@
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Diagnostics;
 
 namespace Game.Core;
 
@@ -44,8 +45,24 @@ public static class HighScoreStore
 
             return Array.Empty<LeaderboardEntry>();
         }
-        catch
+        catch (IOException ex)
         {
+            Debug.WriteLine($"[HighScoreStore] I/O error loading leaderboard: {ex}");
+            return Array.Empty<LeaderboardEntry>();
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            Debug.WriteLine($"[HighScoreStore] Access denied loading leaderboard: {ex}");
+            return Array.Empty<LeaderboardEntry>();
+        }
+        catch (JsonException ex)
+        {
+            Debug.WriteLine($"[HighScoreStore] Invalid leaderboard JSON: {ex}");
+            return Array.Empty<LeaderboardEntry>();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[HighScoreStore] Unexpected error loading leaderboard: {ex}");
             return Array.Empty<LeaderboardEntry>();
         }
     }
@@ -101,12 +118,48 @@ public static class HighScoreStore
 
             var normalized = Normalize(entries, maxEntries);
             var json = JsonSerializer.Serialize(new LeaderboardData { Entries = normalized }, JsonOptions);
-            File.WriteAllText(path, json);
+            WriteAllTextAtomic(path, json);
             return true;
         }
-        catch
+        catch (IOException ex)
         {
+            Debug.WriteLine($"[HighScoreStore] I/O error saving leaderboard: {ex}");
             return false;
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            Debug.WriteLine($"[HighScoreStore] Access denied saving leaderboard: {ex}");
+            return false;
+        }
+        catch (JsonException ex)
+        {
+            Debug.WriteLine($"[HighScoreStore] JSON error saving leaderboard: {ex}");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[HighScoreStore] Unexpected error saving leaderboard: {ex}");
+            return false;
+        }
+    }
+
+    private static void WriteAllTextAtomic(string path, string content)
+    {
+        string? directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
+
+        string tempPath = path + ".tmp";
+        string backupPath = path + ".bak";
+        File.WriteAllText(tempPath, content);
+
+        if (File.Exists(path))
+        {
+            File.Replace(tempPath, path, backupPath, ignoreMetadataErrors: true);
+        }
+        else
+        {
+            File.Move(tempPath, path);
         }
     }
 

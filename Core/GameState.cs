@@ -94,6 +94,44 @@ public sealed class GameState
     public int EffectiveMaxBarsOnScreen =>
         IsDevMode ? Math.Min(GameConfig.Difficulty.DevMaxBarsOnScreen, MaxBarsOnScreen) : MaxBarsOnScreen;
 
+    /// <summary>Controlled pause transition that avoids invalid paused states.</summary>
+    public void SetPaused(bool paused)
+    {
+        if (!IsPlaying || IsGameOver || IsLifeLost)
+        {
+            IsPaused = false;
+            return;
+        }
+
+        IsPaused = paused;
+    }
+
+    /// <summary>Controlled playing-state transition.</summary>
+    public void SetPlaying(bool playing)
+    {
+        IsPlaying = playing;
+        if (!playing)
+            IsPaused = false;
+    }
+
+    /// <summary>Controlled life-lost transition.</summary>
+    public void SetLifeLost(bool lifeLost)
+    {
+        IsLifeLost = lifeLost;
+        if (lifeLost)
+            IsPaused = false;
+    }
+
+    /// <summary>Controlled game-over transition preserving existing behavior.</summary>
+    public void SetGameOver()
+    {
+        IsGameOver = true;
+        IsLifeLost = false;
+        IsPaused = false;
+        IsPlaying = false;
+        ShowLeaderboard = true;
+    }
+
     /// <summary>Resets all run-scoped state to new-game defaults.</summary>
     public void ResetRun(int initialBarSpeed, int initialSpawnIntervalFrames)
     {
@@ -268,11 +306,7 @@ public sealed class GameState
     /// <summary>Transitions state into terminal game-over mode.</summary>
     public void ApplyGameOverShakeAndClearMuzzle()
     {
-        IsGameOver = true;
-        IsLifeLost = false;
-        IsPaused = false;
-        IsPlaying = false;
-        ShowLeaderboard = true;
+        SetGameOver();
         MuzzleFlashFrames = 0;
         ShakeUntilTickMs = Environment.TickCount64 + GameConfig.Effects.GameOverShakeMs;
     }
