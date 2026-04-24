@@ -7,6 +7,8 @@ namespace Game.Audio;
 /// <summary>
 /// Builds short PCM sine tones in memory and plays them with <see cref="SoundPlayer"/>.
 /// A small pool of players avoids blocking the UI thread and lets one-shots overlap.
+/// Clip banks are built at type initialization; lazy <see cref="PlayTone"/> banks use <c>ClipBankLock</c> so dictionary
+/// writes and bank reads stay consistent if playback is ever invoked off the UI thread.
 /// </summary>
 public static class SoundGenerator
 {
@@ -16,22 +18,35 @@ public static class SoundGenerator
     private const int PoolSize = 12;
     private const double MasterGain = 0.35;
 
-    private static readonly SoundPlayer[] Players = new SoundPlayer[PoolSize];
-    private static readonly MemoryStream?[] HeldStreams = new MemoryStream[PoolSize];
+    /// <summary>One reusable player+stream pair bound to a clip instance.</summary>
+    private sealed class CachedPlaybackSlot
+    {
+        public required SoundPlayer Player { get; init; }
+        public required MemoryStream Stream { get; init; }
+    }
+
+    /// <summary>Round-robin playback slots for one logical sound key.</summary>
+    private sealed class CachedClipBank
+    {
+        public required CachedPlaybackSlot[] Slots { get; init; }
+        public int NextIndex;
+    }
+
     private static readonly Dictionary<string, byte[][]> SoundBank = new();
-    private static int _nextSlot;
+    private static readonly Dictionary<string, CachedClipBank> ClipBanks = new(StringComparer.Ordinal);
+    private static readonly object ClipBankLock = new();
 
     static SoundGenerator()
     {
-        for (int i = 0; i < PoolSize; i++)
-            Players[i] = new SoundPlayer();
         WarmupBank();
+        BuildClipBanks();
     }
 
     /// <summary>Ensures static warmup executes before gameplay.</summary>
     public static void Warmup()
     {
-        _ = Players.Length;
+        // Access forces static constructor completion and preload side effects.
+        _ = ClipBanks.Count;
     }
 
     /// <summary>
@@ -42,57 +57,13 @@ public static class SoundGenerator
         int jitter = Random.Shared.Next(-95, 96);
         int f = Math.Clamp(frequencyHz + jitter, 40, 16000);
         int ms = Math.Max(1, durationMs);
-
-        int slot = Interlocked.Increment(ref _nextSlot);
-        if (slot < 0) slot = -slot;
-        slot %= PoolSize;
-
-        MemoryStream wav;
-        try
+        string key = $"tone:{f}:{ms}";
+        lock (ClipBankLock)
         {
-            wav = BuildWavSine(f, ms);
+            if (!ClipBanks.ContainsKey(key))
+                BuildDynamicToneBank(key, f, ms);
         }
-        catch (OutOfMemoryException ex)
-        {
-            Debug.WriteLine($"[SoundGenerator] Out of memory building tone: {ex}");
-            return;
-        }
-        catch (ArgumentOutOfRangeException ex)
-        {
-            Debug.WriteLine($"[SoundGenerator] Invalid tone arguments: {ex}");
-            return;
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"[SoundGenerator] Unexpected error building tone: {ex}");
-            return;
-        }
-
-        SoundPlayer player = Players[slot];
-        try
-        {
-            player.Stop();
-            HeldStreams[slot]?.Dispose();
-            HeldStreams[slot] = wav;
-            wav.Position = 0;
-            player.Stream = wav;
-            player.Load();
-            player.Play();
-        }
-        catch (InvalidOperationException ex)
-        {
-            Debug.WriteLine($"[SoundGenerator] Invalid player state: {ex}");
-            HeldStreams[slot]?.Dispose();
-            HeldStreams[slot] = null;
-            wav.Dispose();
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"[SoundGenerator] Unexpected playback error: {ex}");
-            HeldStreams[slot]?.Dispose();
-            HeldStreams[slot] = null;
-            wav.Dispose();
-        }
+        PlayFromBank(key);
     }
 
     /// <summary>Fires a short bright tone for player shots.</summary>
@@ -126,6 +97,7 @@ public static class SoundGenerator
     public static void PlayPierceHitSound() =>
         PlayFromBank("pierce");
 
+    /// <summary>Builds raw PCM variant arrays for each gameplay SFX key.</summary>
     private static void WarmupBank()
     {
         int variants = Game.Core.GameRuntimeConfig.Current.AudioVariantCount;
@@ -139,6 +111,71 @@ public static class SoundGenerator
         SoundBank["pierce"] = BuildVariants(1250, 1650, 38, 58, variants);
     }
 
+    /// <summary>Converts raw PCM variants into preloaded replayable banks.</summary>
+    private static void BuildClipBanks()
+    {
+        lock (ClipBankLock)
+        {
+        foreach (var (key, variants) in SoundBank)
+            ClipBanks[key] = BuildCachedClipBank(variants);
+        }
+    }
+
+    /// <summary>Creates and preloads round-robin players for one clip variant set.</summary>
+    private static CachedClipBank BuildCachedClipBank(byte[][] variants)
+    {
+        if (variants.Length == 0)
+            return new CachedClipBank { Slots = [] };
+
+        int slotCount = Math.Max(2, Math.Min(PoolSize, variants.Length * 2));
+        var slots = new CachedPlaybackSlot[slotCount];
+        for (int i = 0; i < slotCount; i++)
+        {
+            byte[] sample = variants[i % variants.Length];
+            var stream = new MemoryStream(sample, writable: false);
+            var player = new SoundPlayer(stream);
+            try
+            {
+                player.Load();
+            }
+            catch (InvalidOperationException ex)
+            {
+                Debug.WriteLine($"[SoundGenerator] Invalid player state during preload: {ex}");
+            }
+            catch (TimeoutException ex)
+            {
+                Debug.WriteLine($"[SoundGenerator] Timeout preloading clip: {ex}");
+            }
+
+            slots[i] = new CachedPlaybackSlot
+            {
+                Player = player,
+                Stream = stream
+            };
+        }
+
+        return new CachedClipBank { Slots = slots };
+    }
+
+    /// <summary>Lazy-builds a one-key tone bank for ad-hoc <see cref="PlayTone"/> calls.</summary>
+    private static void BuildDynamicToneBank(string key, int frequencyHz, int durationMs)
+    {
+        try
+        {
+            using MemoryStream wav = BuildWavSine(frequencyHz, durationMs);
+            ClipBanks[key] = BuildCachedClipBank([wav.ToArray()]);
+        }
+        catch (OutOfMemoryException ex)
+        {
+            Debug.WriteLine($"[SoundGenerator] Out of memory building tone bank: {ex}");
+        }
+        catch (ArgumentOutOfRangeException ex)
+        {
+            Debug.WriteLine($"[SoundGenerator] Invalid tone arguments: {ex}");
+        }
+    }
+
+    /// <summary>Builds randomized PCM variants to reduce repetitive timbre.</summary>
     private static byte[][] BuildVariants(int minFreq, int maxFreq, int minMs, int maxMs, int count)
     {
         count = Math.Clamp(count, 1, 64);
@@ -154,45 +191,32 @@ public static class SoundGenerator
         return variants;
     }
 
+    /// <summary>Plays one preloaded clip bank slot without reloading audio metadata.</summary>
     private static void PlayFromBank(string key)
     {
-        if (!SoundBank.TryGetValue(key, out byte[][]? variants) || variants.Length == 0)
-            return;
-        byte[] selected = variants[Random.Shared.Next(variants.Length)];
-        PlayBytes(selected);
-    }
-
-    private static void PlayBytes(byte[] bytes)
-    {
-        int slot = Interlocked.Increment(ref _nextSlot);
-        if (slot < 0) slot = -slot;
-        slot %= PoolSize;
-
-        var wav = new MemoryStream(bytes, writable: false);
-        SoundPlayer player = Players[slot];
+        CachedClipBank? bank;
+        lock (ClipBankLock)
+        {
+            if (!ClipBanks.TryGetValue(key, out bank) || bank.Slots.Length == 0)
+                return;
+        }
+        // Round-robin keeps rapid one-shots from cutting each other off immediately.
+        int slotIndex = Interlocked.Increment(ref bank.NextIndex);
+        if (slotIndex < 0) slotIndex = -slotIndex;
+        CachedPlaybackSlot slot = bank.Slots[slotIndex % bank.Slots.Length];
         try
         {
-            player.Stop();
-            HeldStreams[slot]?.Dispose();
-            HeldStreams[slot] = wav;
-            wav.Position = 0;
-            player.Stream = wav;
-            player.Load();
-            player.Play();
+            slot.Player.Stop();
+            slot.Stream.Position = 0;
+            slot.Player.Play();
         }
         catch (InvalidOperationException ex)
         {
-            Debug.WriteLine($"[SoundGenerator] Invalid player state: {ex}");
-            HeldStreams[slot]?.Dispose();
-            HeldStreams[slot] = null;
-            wav.Dispose();
+            Debug.WriteLine($"[SoundGenerator] Invalid player state during playback: {ex}");
         }
-        catch (Exception ex)
+        catch (TimeoutException ex)
         {
-            Debug.WriteLine($"[SoundGenerator] Unexpected playback error: {ex}");
-            HeldStreams[slot]?.Dispose();
-            HeldStreams[slot] = null;
-            wav.Dispose();
+            Debug.WriteLine($"[SoundGenerator] Playback timeout: {ex}");
         }
     }
 

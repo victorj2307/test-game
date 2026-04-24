@@ -61,9 +61,9 @@ public static class HighScoreStore
             Debug.WriteLine($"[HighScoreStore] Invalid leaderboard JSON: {ex}");
             return Array.Empty<LeaderboardEntry>();
         }
-        catch (Exception ex)
+        catch (NotSupportedException ex)
         {
-            Debug.WriteLine($"[HighScoreStore] Unexpected error loading leaderboard: {ex}");
+            Debug.WriteLine($"[HighScoreStore] Unsupported leaderboard JSON schema: {ex}");
             return Array.Empty<LeaderboardEntry>();
         }
     }
@@ -136,9 +136,9 @@ public static class HighScoreStore
             Debug.WriteLine($"[HighScoreStore] JSON error saving leaderboard: {ex}");
             return false;
         }
-        catch (Exception ex)
+        catch (NotSupportedException ex)
         {
-            Debug.WriteLine($"[HighScoreStore] Unexpected error saving leaderboard: {ex}");
+            Debug.WriteLine($"[HighScoreStore] Unsupported leaderboard JSON schema while saving: {ex}");
             return false;
         }
     }
@@ -226,9 +226,9 @@ public static class HighScoreStore
         {
             Debug.WriteLine($"[HighScoreStore] Migration access denied: {ex}");
         }
-        catch (Exception ex)
+        catch (NotSupportedException ex)
         {
-            Debug.WriteLine($"[HighScoreStore] Migration unexpected error: {ex}");
+            Debug.WriteLine($"[HighScoreStore] Migration JSON schema unsupported: {ex}");
         }
     }
 

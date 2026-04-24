@@ -1,0 +1,78 @@
+---
+description: Retro Arcade C# standards — learners, gameplay, performance, data safety
+alwaysApply: true
+---
+
+# Retro Arcade — Project Rules
+
+Learning-first C# arcade game: prioritize what a newcomer can read, trace, and change safely over clever or dense code.
+
+## General principles
+
+- Match existing naming, layout, and patterns in the repo.
+- Prefer readability, simplicity, and clear names; micro-optimize only in measured hot paths.
+- Short, focused methods; extract when a block has one obvious job.
+- Remove dead code and duplication; change only what the task needs (no drive-by refactors).
+
+## Documentation
+
+- Brief comments where behavior is non-obvious (timers, difficulty steps, collision edge cases)—not on every line.
+- Update **README.md** when features, player-visible behavior, or major systems change.
+
+## Gameplay integrity
+
+- Do **not** change gameplay unless explicitly requested.
+- Preserve difficulty balance and progression unless explicitly tuning them.
+- Preserve visual feedback hierarchy (e.g. **bomb > generic hit**—do not invert or muddy without intent).
+
+## Performance
+
+- No allocations in hot paths (per-frame update/draw/collision batches): avoid allocating LINQ, string concat in tight loops, boxing, unnecessary closures.
+- No `.ToList()` / `.ToArray()` inside per-frame loops; cache or index.
+- Cache reused GDI+ objects (pens, brushes, fonts); do not create/dispose every frame without reason.
+- No blocking I/O or heavy sync work on the gameplay thread during active play when avoidable.
+
+## Game loop
+
+- Do not silently change fixed-step or delta-time semantics; document timing assumptions if you change them.
+- Keep order predictable: input → simulate → collide → render unless a change is deliberate and documented.
+
+## Architecture
+
+- Small, cohesive types; hook into existing systems (collision, spawn, render, audio), not ad-hoc globals.
+- Respect UI (forms) vs simulation vs rendering; do not hide game rules only inside paint handlers.
+
+## Data safety
+
+- Persist with safe writes: temp file → flush → **atomic replace** so crashes mid-write do not corrupt the main file.
+- Validate reads: size limits, parse errors, safe defaults so bad files cannot break startup or loops.
+
+## Configuration
+
+- No unexplained magic numbers; use centralized config types/constants already in the project.
+- New tunables go through the same configuration structure.
+
+## Visual consistency
+
+- Follow existing palette, scale, HUD, and effects; keep retro/pixel-consistent choices unless redesign is requested.
+
+## Testing
+
+- Add or extend tests for regressable behavior (collision, scoring, difficulty, persistence).
+- Tests must be deterministic; avoid flaky timers, shared real filesystem, or order-dependent races unless isolated.
+
+## Code quality
+
+- Meaningful names; small methods; no dead branches; extract shared helpers when two places encode the same rule.
+
+## State management
+
+- Phase changes (menu, play, pause, game over) stay explicit and go through existing state APIs—no hidden transitions from deep call chains.
+
+## Audio
+
+- Non-blocking for the frame loop; follow existing one-shot vs loop patterns; no blocking audio init every frame.
+
+## Practical boundaries
+
+- Skip enterprise-only patterns (heavy DI, DDD layers) unless asked. Keep rules actionable for this codebase.

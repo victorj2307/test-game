@@ -7,7 +7,10 @@ using Game.Systems;
 
 namespace Game.Core;
 
-/// <summary>Orchestrates game flow; delegates to GameState, EntityManager, and focused systems.</summary>
+/// <summary>
+/// Orchestrates game flow; delegates to <see cref="GameState"/>, <see cref="EntityManager"/>, and focused systems.
+/// Leaderboard qualification for UI uses the in-memory list; call <see cref="DisposeResources"/> when the host form closes.
+/// </summary>
 public sealed class GameManager
 {
     public const int LeaderboardMaxEntries = GameConfig.Persistence.LeaderboardMaxEntries;
@@ -52,9 +55,30 @@ public sealed class GameManager
 
     public int ComboMultiplier => _state.ComboMultiplier;
 
-    /// <summary>Returns true when the current score can enter Top-N leaderboard.</summary>
+    /// <summary>
+    /// Returns true when the current score can enter Top-N leaderboard.
+    /// Uses in-memory leaderboard snapshot to avoid extra disk reads.
+    /// </summary>
     public bool ScoreQualifiesForLeaderboard() =>
-        HighScoreStore.Qualifies(_state.Score, LeaderboardMaxEntries);
+        ScoreQualifiesFromEntries(_state.Score, _leaderboard, LeaderboardMaxEntries);
+
+    /// <summary>
+    /// Returns whether <paramref name="score"/> would enter the top <paramref name="maxEntries"/> slots
+    /// given an ordered leaderboard snapshot (highest scores first). Used for UI qualification without re-reading disk.
+    /// </summary>
+    /// <param name="score">Final or current run score; non-positive scores never qualify.</param>
+    /// <param name="leaderboard">In-memory list, typically same order as <see cref="HighScoreStore.LoadLeaderboard"/>.</param>
+    /// <param name="maxEntries">Board capacity (clamped to at least 1).</param>
+    internal static bool ScoreQualifiesFromEntries(
+        int score,
+        IReadOnlyList<HighScoreStore.LeaderboardEntry> leaderboard,
+        int maxEntries)
+    {
+        if (score <= 0) return false;
+        int cap = Math.Max(1, maxEntries);
+        if (leaderboard.Count < cap) return true;
+        return score > leaderboard[^1].Score;
+    }
 
     /// <summary>Persists a final score entry and refreshes in-memory leaderboard data.</summary>
     public void SubmitLeaderboardScore(string name)
@@ -333,4 +357,10 @@ public sealed class GameManager
     {
         _renderer.Draw(g, clientWidth, playHeight, uiFont, _state, _entities, Player, _leaderboard, ShowDebug, DebugFps);
     }
+
+    /// <summary>
+    /// Releases static GDI resources held by <see cref="Rendering.RenderSystem"/> (pen/brush/font caches, sky brush).
+    /// Invoked from <see cref="Game.UI.GameForm"/> on <c>FormClosed</c>.
+    /// </summary>
+    public void DisposeResources() => RenderSystem.DisposeSharedResources();
 }

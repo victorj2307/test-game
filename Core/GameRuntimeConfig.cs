@@ -57,9 +57,9 @@ public sealed class GameRuntimeConfig
             Debug.WriteLine($"[GameRuntimeConfig] Invalid JSON config: {ex}");
             return new GameRuntimeConfig();
         }
-        catch (Exception ex)
+        catch (NotSupportedException ex)
         {
-            Debug.WriteLine($"[GameRuntimeConfig] Unexpected error loading config: {ex}");
+            Debug.WriteLine($"[GameRuntimeConfig] Unsupported JSON config schema: {ex}");
             return new GameRuntimeConfig();
         }
     }

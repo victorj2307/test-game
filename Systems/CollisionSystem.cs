@@ -6,7 +6,11 @@ using Game.Entities;
 
 namespace Game.Systems;
 
-/// <summary>Bullet vs bar hits, damage, particles, destroy scoring, and bomb wave queue.</summary>
+/// <summary>
+/// Bullet vs bar hits, damage, particles, destroy scoring, and bomb wave queue.
+/// Piercing shots track bars already struck in the current <see cref="Resolve"/> pass so pierce budget is not consumed
+/// on the same target repeatedly in one frame. Bomb explosion ranking reuses scratch collections to limit allocations.
+/// </summary>
 public sealed class CollisionSystem
 {
     private const int MaxLaneProbeOffset = 1;
@@ -18,6 +22,10 @@ public sealed class CollisionSystem
 
     private readonly List<PendingBombKill> _bombKillQueue = new();
     private readonly Dictionary<int, List<int>> _barsByLane = new();
+    private readonly HashSet<Bar> _hitBarsThisBullet = new();
+    private readonly List<(int Idx, int Bottom, long Dist2)> _rankedScratch = new();
+    private readonly List<(Bar Bar, long Dist2)> _killBarsScratch = new();
+    private readonly HashSet<Bar> _killSetScratch = new();
 
     private enum DestroyStyle
     {
@@ -62,6 +70,7 @@ public sealed class CollisionSystem
 
     /// <summary>
     /// Resolves bullet-bar collisions for the current frame, including damage, FX, and destruction.
+    /// Piercing bullets may resolve multiple impacts in one frame while pierce budget remains, but each bar is hit at most once per bullet per call.
     /// </summary>
     public void Resolve(int damagePerHit)
     {
@@ -70,14 +79,16 @@ public sealed class CollisionSystem
         {
             Bullet bl = _entities.Bullets[bi];
             bool removeBullet = false;
+            _hitBarsThisBullet.Clear();
             while (!removeBullet)
             {
                 Rectangle bRect = bl.GetBounds();
-                int hitIndex = FindHitBarIndexInBulletLanes(bRect);
+                int hitIndex = FindHitBarIndexInBulletLanes(bRect, _hitBarsThisBullet);
 
                 if (hitIndex < 0) break;
 
                 Bar hitBar = _entities.Bars[hitIndex];
+                _hitBarsThisBullet.Add(hitBar);
                 Rectangle hitBarRect = hitBar.GetBounds();
                 hitBar.ApplyDamage(damagePerHit);
                 if (bl.IsPiercingVisual)
@@ -144,7 +155,11 @@ public sealed class CollisionSystem
         }
     }
 
-    private int FindHitBarIndexInBulletLanes(Rectangle bulletRect)
+    /// <summary>
+    /// Broad-phase lane probe then AABB test; returns lowest bar list index among intersecting candidates, or -1.
+    /// When <paramref name="ignoreBars"/> is non-null, those bars are skipped (piercing same-frame repeat guard).
+    /// </summary>
+    private int FindHitBarIndexInBulletLanes(Rectangle bulletRect, IReadOnlySet<Bar>? ignoreBars = null)
     {
         int startLane = GetLaneIndexFromX(bulletRect.Left) - MaxLaneProbeOffset;
         int endLane = GetLaneIndexFromX(Math.Max(bulletRect.Left, bulletRect.Right - 1)) + MaxLaneProbeOffset;
@@ -158,6 +173,7 @@ public sealed class CollisionSystem
                 if (idx < 0 || idx >= _entities.Bars.Count) continue;
                 Bar bar = _entities.Bars[idx];
                 if (bar.Height <= 0) continue;
+                if (ignoreBars is not null && ignoreBars.Contains(bar)) continue;
                 if (!bar.GetBounds().IntersectsWith(bulletRect)) continue;
                 if (hitIndex < 0 || idx < hitIndex)
                     hitIndex = idx;
@@ -213,7 +229,7 @@ public sealed class CollisionSystem
             return;
         }
 
-        var ranked = new List<(int Idx, int Bottom, long Dist2)>(n);
+        _rankedScratch.Clear();
         for (int i = 0; i < n; i++)
         {
             Bar bar = _entities.Bars[i];
@@ -225,38 +241,38 @@ public sealed class CollisionSystem
             long dx = bx - cx;
             long dy = by - cy;
             long d2 = dx * dx + dy * dy;
-            ranked.Add((i, bottom, d2));
+            _rankedScratch.Add((i, bottom, d2));
         }
 
-        if (ranked.Count == 0) return;
+        if (_rankedScratch.Count == 0) return;
 
-        int killCount = Math.Max(1, Math.Min(ranked.Count - 1, (int)Math.Floor(ranked.Count * GameConfig.Effects.BombKillFraction)));
+        int killCount = Math.Max(1, Math.Min(_rankedScratch.Count - 1, (int)Math.Floor(_rankedScratch.Count * GameConfig.Effects.BombKillFraction)));
 
-        ranked.Sort(static (a, b) =>
+        _rankedScratch.Sort(static (a, b) =>
         {
             int c = b.Bottom.CompareTo(a.Bottom);
             if (c != 0) return c;
             return a.Dist2.CompareTo(b.Dist2);
         });
 
-        var killBars = new List<(Bar Bar, long Dist2)>(killCount);
+        _killBarsScratch.Clear();
         for (int k = 0; k < killCount; k++)
         {
-            int idx = ranked[k].Idx;
-            killBars.Add((_entities.Bars[idx], ranked[k].Dist2));
+            int idx = _rankedScratch[k].Idx;
+            _killBarsScratch.Add((_entities.Bars[idx], _rankedScratch[k].Dist2));
         }
 
-        killBars.Sort(static (a, b) => a.Dist2.CompareTo(b.Dist2));
+        _killBarsScratch.Sort(static (a, b) => a.Dist2.CompareTo(b.Dist2));
 
-        var killSet = new HashSet<Bar>();
-        foreach ((Bar bar, _) in killBars)
-            killSet.Add(bar);
+        _killSetScratch.Clear();
+        foreach ((Bar bar, _) in _killBarsScratch)
+            _killSetScratch.Add(bar);
 
         long r2 = (long)GameConfig.Effects.BombRadius * GameConfig.Effects.BombRadius;
         for (int i = _entities.Bars.Count - 1; i >= 0; i--)
         {
             Bar bar = _entities.Bars[i];
-            if (killSet.Contains(bar)) continue;
+            if (_killSetScratch.Contains(bar)) continue;
             Rectangle b = bar.GetBounds();
             int bx = b.Left + b.Width / 2;
             int by = b.Top + b.Height / 2;
@@ -269,12 +285,12 @@ public sealed class CollisionSystem
             if (bar.IsDestroyed) DestroyBarAt(i, DestroyStyle.Bomb, cx, cy);
         }
 
-        for (int i = 0; i < killBars.Count; i++)
+        for (int i = 0; i < _killBarsScratch.Count; i++)
         {
             int delay = GameConfig.Effects.BombKillDelayStartFrames + i * GameConfig.Effects.BombKillStaggerFrames;
             _bombKillQueue.Add(new PendingBombKill
             {
-                Bar = killBars[i].Bar,
+                Bar = _killBarsScratch[i].Bar,
                 FramesLeft = delay,
                 ExplosionX = cx,
                 ExplosionY = cy

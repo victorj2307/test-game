@@ -5,7 +5,10 @@ using Game.Core;
 
 namespace Game.UI;
 
-/// <summary>Host window: timer-driven sim, Stopwatch per-tick delta, keyboard input, GDI+ in OnPaint.</summary>
+/// <summary>
+/// Host window: timer-driven sim, Stopwatch per-tick delta, keyboard input, GDI+ in OnPaint.
+/// On game over, the timer and run loop stop before the leaderboard name modal. On close, shared render caches are disposed via <see cref="GameManager.DisposeResources"/>.
+/// </summary>
 public sealed class GameForm : Form
 {
     private const int StartButtonWidth = 200;
@@ -91,9 +94,11 @@ public sealed class GameForm : Form
         FormClosed += OnFormClosed;
     }
 
+    /// <summary>Stops the frame timer, unsubscribes, and releases static GDI caches owned by <see cref="Rendering.RenderSystem"/>.</summary>
     private void OnFormClosed(object? sender, FormClosedEventArgs e)
     {
         _gameTimer.Stop();
+        _game.DisposeResources();
         _gameTimer.Tick -= GameLoopTick;
         _gameTimer.Dispose();
     }
@@ -231,7 +236,10 @@ public sealed class GameForm : Form
 
     private void OnKeyUp(object? sender, KeyEventArgs e) => _keysDown.Remove(e.KeyCode);
 
-    /// <summary>Main timer callback: computes dt, updates simulation, and schedules repaint.</summary>
+    /// <summary>
+    /// Main timer callback: computes dt, updates simulation, and schedules repaint.
+    /// When <see cref="GameManager.IsGameOver"/> becomes true, stops the timer before <see cref="HandleLeaderboardOnGameOver"/> (modal dialog).
+    /// </summary>
     private void GameLoopTick(object? sender, EventArgs e)
     {
         if (!_runGameLoop) return;
@@ -269,13 +277,16 @@ public sealed class GameForm : Form
         }
         if (_game.IsGameOver)
         {
+            if (_runGameLoop)
+            {
+                _gameTimer.Stop();
+                _runGameLoop = false;
+            }
             if (!_gameOverEntryHandled)
             {
                 _gameOverEntryHandled = true;
                 HandleLeaderboardOnGameOver();
             }
-            _gameTimer.Stop();
-            _runGameLoop = false;
             _btnStart.Visible = true;
             _btnStart.Text = "Play again";
             UpdateStartButtonLayout();

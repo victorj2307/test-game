@@ -5,7 +5,12 @@ using Game.Entities;
 
 namespace Game.Rendering;
 
-/// <summary>All GDI+ drawing for the playfield: world, HUD, overlays, debug.</summary>
+/// <summary>
+/// All GDI+ drawing for the playfield: world, HUD, overlays, debug.
+/// Hot paths reuse <see cref="Pen"/>, <see cref="SolidBrush"/>, and <see cref="Font"/> via static LRU-bounded caches
+/// (evicted entries are disposed). Call <see cref="DisposeSharedResources"/> on application shutdown
+/// (see <see cref="Game.Core.GameManager.DisposeResources"/>) to release remaining cached handles and the sky gradient brush.
+/// </summary>
 public sealed class RenderSystem
 {
     private static readonly Brush PlayerBrush = new SolidBrush(Color.FromArgb(40, 220, 255));
@@ -31,7 +36,35 @@ public sealed class RenderSystem
     private readonly Pen _pierceTrailPen = new(Color.FromArgb(95, 220, 80, 255), 2.2f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
     private readonly Pen _pierceTrailInnerPen = new(Color.FromArgb(55, 255, 200, 255), 1.1f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
     private readonly Pen _bulletAimPen = new(Color.FromArgb(255, 200, 140, 60), 2.25f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+    // GDI resource caches reduce repeated allocations in hot draw paths.
     private static readonly Dictionary<string, Font> FontCache = new();
+    private static readonly LinkedList<string> FontLru = new();
+    private static readonly Dictionary<string, LinkedListNode<string>> FontNodes = new();
+    private static readonly Dictionary<int, SolidBrush> BrushCache = new();
+    private static readonly LinkedList<int> BrushLru = new();
+    private static readonly Dictionary<int, LinkedListNode<int>> BrushNodes = new();
+    private static readonly Dictionary<string, Pen> PenCache = new();
+    private static readonly LinkedList<string> PenLru = new();
+    private static readonly Dictionary<string, LinkedListNode<string>> PenNodes = new();
+    private const int MaxFontCacheEntries = 96;
+    private const int MaxBrushCacheEntries = 192;
+    private const int MaxPenCacheEntries = 256;
+    // Sky gradient is size-dependent, so keep one cached brush per current viewport dimensions.
+    private static LinearGradientBrush? CachedSkyBrush;
+    private static int CachedSkyWidth = -1;
+    private static int CachedSkyHeight = -1;
+    /// <summary>Shared color stops reused whenever the cached sky brush is rebuilt.</summary>
+    private static readonly ColorBlend SkyGradientBlend = new(4)
+    {
+        Positions = [0f, 0.34f, 0.64f, 1f],
+        Colors =
+        [
+            Color.FromArgb(255, 16, 10, 46),
+            Color.FromArgb(255, 58, 16, 82),
+            Color.FromArgb(255, 215, 65, 110),
+            Color.FromArgb(255, 255, 188, 72)
+        ]
+    };
 
     private static readonly float[] BombShakeOx =
     {
@@ -97,7 +130,7 @@ public sealed class RenderSystem
         _specialGlowPen.Width = barPastDanger ? 2f : 1f;
         g.DrawLine(_specialGlowPen, 0, dangerY, clientWidth, dangerY);
 
-        using var barOutline = new Pen(Color.FromArgb(110, 0, 0, 0), 1f);
+        var barOutline = GetCachedPen(Color.FromArgb(110, 0, 0, 0));
         foreach (var bar in entities.Bars)
         {
             if (bar.Height <= 0) continue;
@@ -168,7 +201,7 @@ public sealed class RenderSystem
         g.DrawLine(_bulletAimPen, muzzleX, muzzle.Top, muzzleX, muzzle.Top - 7);
         if (state.MuzzleFlashFrames > 0)
         {
-            using var flash = new SolidBrush(Color.FromArgb(220, 255, 255, 255));
+            var flash = GetCachedBrush(Color.FromArgb(220, 255, 255, 255));
             g.FillEllipse(flash, muzzleX - 10, muzzle.Top - 14, 20, 16);
         }
 
@@ -176,13 +209,12 @@ public sealed class RenderSystem
 
         if (state.ShowLeaderboard)
         {
-            using (var overlay = new SolidBrush(Color.FromArgb(220, 0, 0, 0)))
-                g.FillRectangle(overlay, 0, 0, clientWidth, playHeight);
+            g.FillRectangle(GetCachedBrush(Color.FromArgb(220, 0, 0, 0)), 0, 0, clientWidth, playHeight);
             float statsBottom = DrawFinalResultsPanel(g, uiFont, state, clientWidth, playHeight);
             float gameOverBottom = DrawGameOverTitle(g, uiFont, clientWidth, statsBottom + 10f);
             float leaderboardBottom = DrawLeaderboard(g, uiFont, leaderboard, clientWidth, playHeight, state.Score, gameOverBottom + 14f);
             const string hint = "Click Start to play again";
-            using var hintBr = new SolidBrush(Color.FromArgb(220, 220, 225));
+            var hintBr = GetCachedBrush(Color.FromArgb(220, 220, 225));
             DrawCenteredText(g, hint, uiFont, hintBr, clientWidth, leaderboardBottom + 14f);
         }
         else
@@ -197,30 +229,28 @@ public sealed class RenderSystem
             if (state.LifeLostFlashFrames > 0)
             {
                 int flashAlpha = Math.Min(170, state.LifeLostFlashFrames * 9);
-                using var flashOverlay = new SolidBrush(Color.FromArgb(flashAlpha, 210, 30, 40));
+                var flashOverlay = GetCachedBrush(Color.FromArgb(flashAlpha, 210, 30, 40));
                 g.FillRectangle(flashOverlay, 0, 0, clientWidth, playHeight);
             }
 
             if (state.IsGameOver)
             {
-                using (var overlay = new SolidBrush(Color.FromArgb(220, 0, 0, 0)))
-                    g.FillRectangle(overlay, 0, 0, clientWidth, playHeight);
+                g.FillRectangle(GetCachedBrush(Color.FromArgb(220, 0, 0, 0)), 0, 0, clientWidth, playHeight);
                 var goFont = GetCachedFont(uiFont, uiFont.Size + 20f, FontStyle.Bold);
                 float cy = playHeight * 0.28f;
                 DrawCenteredText(g, "GAME OVER", goFont, GoBrush, clientWidth, cy);
                 var statFont = GetCachedFont(uiFont, uiFont.Size + 2f, FontStyle.Bold);
-                using var statBrush = new SolidBrush(Color.FromArgb(225, 238, 245));
+                var statBrush = GetCachedBrush(Color.FromArgb(225, 238, 245));
                 DrawCenteredText(g, $"Final Score: {state.Score}", statFont, statBrush, clientWidth, cy + 64f);
                 DrawCenteredText(g, $"Best Score:  {state.HighScore}", statFont, statBrush, clientWidth, cy + 96f);
                 DrawCenteredText(g, $"Max Combo:  x{Math.Max(1, state.MaxCombo)}", statFont, statBrush, clientWidth, cy + 128f);
                 const string hint = "Click Start to play again";
-                using var hintBr = new SolidBrush(Color.FromArgb(220, 220, 225));
+                var hintBr = GetCachedBrush(Color.FromArgb(220, 220, 225));
                 DrawCenteredText(g, hint, uiFont, hintBr, clientWidth, cy + 176f);
             }
             else if (state.IsLifeLost)
             {
-                using (var overlay = new SolidBrush(Color.FromArgb(165, 0, 0, 0)))
-                    g.FillRectangle(overlay, 0, 0, clientWidth, playHeight);
+                g.FillRectangle(GetCachedBrush(Color.FromArgb(165, 0, 0, 0)), 0, 0, clientWidth, playHeight);
                 var lifeLostFont = GetCachedFont(uiFont, uiFont.Size + 10f, FontStyle.Bold);
                 const string msg = "LIFE LOST";
                 SizeF sz = g.MeasureString(msg, lifeLostFont);
@@ -228,20 +258,20 @@ public sealed class RenderSystem
                 float cy = playHeight * 0.34f;
                 g.DrawString(msg, lifeLostFont, TextBrush, cx, cy);
 
-                DrawLifeIcons(g, 0.5f * (clientWidth - (3 * 18 + 2 * 8)), cy + sz.Height + 14, 3, 16, state.Lives);
+                DrawLifeIcons(g, 0.5f * (clientWidth - (state.MaxLives * 18 + Math.Max(0, state.MaxLives - 1) * 8)), cy + sz.Height + 14, state.MaxLives, 16, state.Lives);
 
                 const string hint = "Press Enter/Space or click Continue";
-                using var hintBr = new SolidBrush(Color.FromArgb(220, 220, 225));
+                var hintBr = GetCachedBrush(Color.FromArgb(220, 220, 225));
                 float hintW = g.MeasureString(hint, uiFont).Width;
                 g.DrawString(hint, uiFont, hintBr, (clientWidth - hintW) * 0.5f, cy + sz.Height + 44f);
             }
             else if (state.IsPaused)
             {
-                using var overlay = new SolidBrush(Color.FromArgb(170, 0, 0, 0));
+                var overlay = GetCachedBrush(Color.FromArgb(170, 0, 0, 0));
                 g.FillRectangle(overlay, 0, 0, clientWidth, playHeight);
                 var pausedFont = GetCachedFont(uiFont, uiFont.Size + 18f, FontStyle.Bold);
                 var hintFont = GetCachedFont(uiFont, uiFont.Size + 1f, FontStyle.Regular);
-                using var hintBr = new SolidBrush(Color.FromArgb(220, 220, 225));
+                var hintBr = GetCachedBrush(Color.FromArgb(220, 220, 225));
                 float cy = playHeight * 0.34f;
                 DrawCenteredText(g, "PAUSED", pausedFont, TextBrush, clientWidth, cy);
                 DrawCenteredText(g, "Press ESC to continue", hintFont, hintBr, clientWidth, cy + 56f);
@@ -259,7 +289,7 @@ public sealed class RenderSystem
         if (showDebug && !state.ShowLeaderboard)
         {
             var dbgFont = GetCachedFont(uiFont, 7.5f, FontStyle.Regular);
-            using var dbgBr = new SolidBrush(Color.FromArgb(130, 160, 170, 190));
+            var dbgBr = GetCachedBrush(Color.FromArgb(130, 160, 170, 190));
             g.DrawString(
                 $"FPS {debugFps}  dt {state.LastDeltaSeconds * 1000f:0.#}ms  bars {entities.Bars.Count}  bul {entities.Bullets.Count}  ptcl {entities.Particles.Count}  boom {entities.Explosions.Count}  fuse {state.BombFuseFramesLeft}",
                 dbgFont,
@@ -271,13 +301,13 @@ public sealed class RenderSystem
             foreach (var b in entities.Bullets) g.DrawRectangle(DebugPenBullet, b.GetBounds());
             if (state.HasPendingBombPickup)
             {
-                using var fuseDbg = new Pen(Color.Lime, 1f);
+                var fuseDbg = GetCachedPen(Color.Lime);
                 float ix = state.BombIndicatorX;
                 float iy = state.BombIndicatorY;
                 g.DrawLine(fuseDbg, ix - 8f, iy, ix + 8f, iy);
                 g.DrawLine(fuseDbg, ix, iy - 8f, ix, iy + 8f);
             }
-            using var boomMark = new Pen(Color.FromArgb(220, 255, 255, 80), 1f);
+            var boomMark = GetCachedPen(Color.FromArgb(220, 255, 255, 80));
             foreach (var ex in entities.Explosions)
             {
                 float ix = ex.X;
@@ -293,8 +323,8 @@ public sealed class RenderSystem
     private static void DrawDevModeOverlay(Graphics g, Font uiFont, int clientWidth, int playHeight, GameState state)
     {
         var font = GetCachedFont(uiFont, 7.5f, FontStyle.Bold);
-        using var accent = new SolidBrush(Color.FromArgb(255, 120, 255, 140));
-        using var dim = new SolidBrush(Color.FromArgb(210, 200, 220, 210));
+        var accent = GetCachedBrush(Color.FromArgb(255, 120, 255, 140));
+        var dim = GetCachedBrush(Color.FromArgb(210, 200, 220, 210));
         // Sit above F1 debug line (drawn at playHeight - 28)
         float y = playHeight - 76f;
         g.DrawString("DEV MODE", font, accent, 8f, y);
@@ -313,13 +343,13 @@ public sealed class RenderSystem
         float pulse = 0.55f + 0.45f * MathF.Sin(state.ElapsedFrames * 0.48f);
         int alpha = (int)(140 * pulse + 80);
         alpha = Math.Clamp(alpha, 70, 255);
-        using var core = new SolidBrush(Color.FromArgb(alpha, 255, 220, 70));
-        using var rim = new Pen(Color.FromArgb(255, 255, 100, 30), 2.5f) { LineJoin = LineJoin.Round };
+        var core = GetCachedBrush(Color.FromArgb(alpha, 255, 220, 70));
+        var rim = GetCachedPen(Color.FromArgb(255, 255, 100, 30), 2.5f, join: LineJoin.Round);
         float r = 8f + 4f * pulse;
         g.FillEllipse(core, x - r, y - r, r * 2f, r * 2f);
         g.DrawEllipse(rim, x - r, y - r, r * 2f, r * 2f);
         float warnR = 16f;
-        using var warn = new Pen(Color.FromArgb(200, 255, 60, 40), 1.5f) { DashStyle = DashStyle.Dash };
+        var warn = GetCachedPen(Color.FromArgb(200, 255, 60, 40), 1.5f, dash: DashStyle.Dash);
         g.DrawEllipse(warn, x - warnR, y - warnR, warnR * 2f, warnR * 2f);
     }
 
@@ -331,7 +361,7 @@ public sealed class RenderSystem
         float t = Math.Clamp(f / (float)maxF, 0f, 1f);
         int alpha = Math.Clamp((int)(235 * t), 0, 235);
         int warm = (int)(200 + 40 * t);
-        using var flashBr = new SolidBrush(Color.FromArgb(alpha, 255, 255, warm));
+        var flashBr = GetCachedBrush(Color.FromArgb(alpha, 255, 255, warm));
         g.FillRectangle(flashBr, 0, 0, clientWidth, playHeight);
     }
 
@@ -359,10 +389,10 @@ public sealed class RenderSystem
             for (int k = 4; k >= 1; k--)
             {
                 int alpha = 24 + k * 10;
-                using var glow = new Pen(Color.FromArgb(alpha, 72, 210, 255), 1.1f + k * 0.42f) { LineJoin = LineJoin.Round };
+                var glow = GetCachedPen(Color.FromArgb(alpha, 72, 210, 255), 1.1f + k * 0.42f, join: LineJoin.Round);
                 g.DrawEllipse(glow, left - k * 0.85f, top - k * 0.55f, w + k * 1.7f, h + k * 1.1f);
             }
-            using var edge = new Pen(Color.FromArgb(238, 125, 242, 255), 2.5f) { LineJoin = LineJoin.Round };
+            var edge = GetCachedPen(Color.FromArgb(238, 125, 242, 255), 2.5f, join: LineJoin.Round);
             g.DrawEllipse(edge, left, top, w, h);
         }
 
@@ -370,7 +400,7 @@ public sealed class RenderSystem
         {
             float intensity = Math.Clamp(state.ShieldPickupFlashFrames / 22f, 0f, 1f);
             int a = (int)(55 + 135 * intensity);
-            using var fill = new SolidBrush(Color.FromArgb(Math.Clamp(a, 0, 200), 50, 225, 255));
+            var fill = GetCachedBrush(Color.FromArgb(Math.Clamp(a, 0, 200), 50, 225, 255));
             float amp = 5f + 16f * intensity;
             g.FillEllipse(fill, pr.X - amp, pr.Y - amp * 0.7f, pr.Width + amp * 2f, pr.Height + amp * 1.4f);
         }
@@ -382,10 +412,10 @@ public sealed class RenderSystem
             float e = progress * progress * (3f - 2f * progress);
             float radius = 14f + e * 60f;
             int a = (int)(230 * (1f - progress * 0.75f) + 20);
-            using var pen = new Pen(Color.FromArgb(Math.Clamp(a, 35, 245), 150, 245, 255), 3.1f) { LineJoin = LineJoin.Round };
+            var pen = GetCachedPen(Color.FromArgb(Math.Clamp(a, 35, 245), 150, 245, 255), 3.1f, join: LineJoin.Round);
             g.DrawEllipse(pen, cx - radius, cy - radius, radius * 2f, radius * 2f);
             float r2 = radius * 0.5f;
-            using var inner = new Pen(Color.FromArgb(Math.Clamp(a + 25, 0, 255), 255, 255, 255), 1.7f);
+            var inner = GetCachedPen(Color.FromArgb(Math.Clamp(a + 25, 0, 255), 255, 255, 255), 1.7f);
             g.DrawEllipse(inner, cx - r2, cy - r2, r2 * 2f, r2 * 2f);
         }
 
@@ -393,7 +423,7 @@ public sealed class RenderSystem
         {
             float f = Math.Clamp(state.ShieldBlockFlashFrames / 14f, 0f, 1f);
             int a = (int)(130 * f);
-            using var core = new SolidBrush(Color.FromArgb(Math.Clamp(a, 0, 145), 200, 255, 255));
+            var core = GetCachedBrush(Color.FromArgb(Math.Clamp(a, 0, 145), 200, 255, 255));
             g.FillEllipse(core, pr.X - 4, pr.Y - 4, pr.Width + 8, pr.Height + 8);
         }
     }
@@ -409,16 +439,16 @@ public sealed class RenderSystem
             int baseA = Math.Clamp((int)(255 * fade), 18, 255);
 
             int aOut = (int)(baseA * 0.42f);
-            using var outer = new Pen(Color.FromArgb(aOut, 255, 55, 30), 4.5f) { LineJoin = LineJoin.Round };
+            var outer = GetCachedPen(Color.FromArgb(aOut, 255, 55, 30), 4.5f, join: LineJoin.Round);
             g.DrawEllipse(outer, ex.X - radius, ex.Y - radius, radius * 2f, radius * 2f);
 
             float rMid = Math.Max(8f, radius * 0.64f);
             int aMid = (int)(baseA * 0.78f);
-            using var mid = new Pen(Color.FromArgb(aMid, 255, 150, 45), 3f);
+            var mid = GetCachedPen(Color.FromArgb(aMid, 255, 150, 45), 3f);
             g.DrawEllipse(mid, ex.X - rMid, ex.Y - rMid, rMid * 2f, rMid * 2f);
 
             float rCore = Math.Max(5f, radius * 0.36f);
-            using var core = new Pen(Color.FromArgb(Math.Min(255, baseA + 25), 255, 255, 230), 2.4f);
+            var core = GetCachedPen(Color.FromArgb(Math.Min(255, baseA + 25), 255, 255, 230), 2.4f);
             g.DrawEllipse(core, ex.X - rCore, ex.Y - rCore, rCore * 2f, rCore * 2f);
         }
     }
@@ -432,8 +462,8 @@ public sealed class RenderSystem
         if (state.ComboStreak > 1)
         {
             int m = state.ComboMultiplier;
-            using var comboBr = new SolidBrush(Color.FromArgb(255, 255, 165, 70));
-            using var comboFont = new Font(uiFont.FontFamily, uiFont.Size + 4f, FontStyle.Bold, GraphicsUnit.Point);
+            var comboBr = GetCachedBrush(Color.FromArgb(255, 255, 165, 70));
+            var comboFont = GetCachedFont(uiFont, uiFont.Size + 4f, FontStyle.Bold);
             string comboText = $"COMBO x{m}";
             SizeF comboSize = g.MeasureString(comboText, comboFont);
             float cx = clientWidth - comboSize.Width - 18;
@@ -445,16 +475,16 @@ public sealed class RenderSystem
     {
         const float x = 12f;
         const float y = 12f;
-        using var labelBr = new SolidBrush(Color.FromArgb(170, 190, 205));
+        var labelBr = GetCachedBrush(Color.FromArgb(170, 190, 205));
         var labelFont = Ui8RegularFont;
         g.DrawString("LIVES", labelFont, labelBr, x, y - 1);
-        DrawLifeIcons(g, x + 46, y + 2, 3, 12, state.Lives);
+        DrawLifeIcons(g, x + 46, y + 2, state.MaxLives, 12, state.Lives);
     }
 
     private static void DrawScore(Graphics g, GameState state, Font uiFont, int clientWidth)
     {
-        using var labelBr = new SolidBrush(Color.FromArgb(175, 190, 205));
-        using var scoreBr = new SolidBrush(Color.FromArgb(235, 245, 255));
+        var labelBr = GetCachedBrush(Color.FromArgb(175, 190, 205));
+        var scoreBr = GetCachedBrush(Color.FromArgb(235, 245, 255));
         var labelFont = GetCachedFont(uiFont, uiFont.Size - 1f, FontStyle.Regular);
         var scoreFont = GetCachedFont(uiFont, uiFont.Size + 6f, FontStyle.Bold);
         string label = "SCORE";
@@ -464,8 +494,8 @@ public sealed class RenderSystem
         float boxH = 48f;
         float boxX = clientWidth - boxW - 12f;
         float boxY = 10f;
-        using var boxBr = new SolidBrush(Color.FromArgb(95, 8, 16, 28));
-        using var boxPen = new Pen(Color.FromArgb(120, 75, 95, 125), 1f);
+        var boxBr = GetCachedBrush(Color.FromArgb(95, 8, 16, 28));
+        var boxPen = GetCachedPen(Color.FromArgb(120, 75, 95, 125));
         g.FillRectangle(boxBr, boxX, boxY, boxW, boxH);
         g.DrawRectangle(boxPen, boxX, boxY, boxW - 1, boxH - 1);
         g.DrawString(label, labelFont, labelBr, boxX + 10, boxY + 4);
@@ -474,7 +504,7 @@ public sealed class RenderSystem
 
     private static void DrawBestScore(Graphics g, GameState state, Font uiFont, int clientWidth)
     {
-        using var bestBr = new SolidBrush(Color.FromArgb(165, 176, 188));
+        var bestBr = GetCachedBrush(Color.FromArgb(165, 176, 188));
         var bestFont = GetCachedFont(uiFont, uiFont.Size, FontStyle.Regular);
         string bestText = $"BEST {state.HighScore}";
         SizeF bestSize = g.MeasureString(bestText, bestFont);
@@ -489,8 +519,8 @@ public sealed class RenderSystem
         float rise = (1f - t) * 12f;
         float y = 18f - rise;
 
-        using var back = new SolidBrush(Color.FromArgb(Math.Min(220, alpha), 40, 22, 0));
-        using var text = new SolidBrush(Color.FromArgb(Math.Min(255, alpha + 20), 255, 210, 85));
+        var back = GetCachedBrush(Color.FromArgb(Math.Min(220, alpha), 40, 22, 0));
+        var text = GetCachedBrush(Color.FromArgb(Math.Min(255, alpha + 20), 255, 210, 85));
         var font = GetCachedFont(uiFont, uiFont.Size + 5f, FontStyle.Bold);
         const string msg = "NEW BEST!";
         SizeF sz = g.MeasureString(msg, font);
@@ -508,7 +538,7 @@ public sealed class RenderSystem
             Rectangle r = p.GetBounds();
             PowerUpBrush.Color = GetPowerUpColor(p.Type);
             g.FillEllipse(PowerUpBrush, r);
-            using var pen = new Pen(Color.FromArgb(180, 0, 0, 0), 1f);
+            var pen = GetCachedPen(Color.FromArgb(180, 0, 0, 0));
             g.DrawEllipse(pen, r);
         }
     }
@@ -520,8 +550,8 @@ public sealed class RenderSystem
         const float iconSize = 36f;
         float blockX = (clientWidth - blockW) * 0.5f;
         float blockY = 8f;
-        using var panel = new SolidBrush(Color.FromArgb(92, 10, 18, 28));
-        using var panelBorder = new Pen(Color.FromArgb(130, 75, 95, 125), 1f);
+        var panel = GetCachedBrush(Color.FromArgb(92, 10, 18, 28));
+        var panelBorder = GetCachedPen(Color.FromArgb(130, 75, 95, 125));
         g.FillRectangle(panel, blockX, blockY, blockW, blockH);
         g.DrawRectangle(panelBorder, blockX, blockY, blockW - 1f, blockH - 1f);
 
@@ -543,11 +573,11 @@ public sealed class RenderSystem
     {
         if (state.ActivePowerUp is null)
         {
-            using var empty = new SolidBrush(Color.FromArgb(55, 85, 96, 112));
-            using var emptyBorder = new Pen(Color.FromArgb(100, 95, 108, 128), 1f);
+            var empty = GetCachedBrush(Color.FromArgb(55, 85, 96, 112));
+            var emptyBorder = GetCachedPen(Color.FromArgb(100, 95, 108, 128));
             g.FillEllipse(empty, iconX, iconY, sizeW, sizeH);
             g.DrawEllipse(emptyBorder, iconX, iconY, sizeW - 1f, sizeH - 1f);
-            using var dash = new Pen(Color.FromArgb(140, 180, 195, 210), 1.2f) { DashStyle = DashStyle.Dot };
+            var dash = GetCachedPen(Color.FromArgb(140, 180, 195, 210), 1.2f, dash: DashStyle.Dot);
             float cx = iconX + sizeW * 0.5f;
             float cy = iconY + sizeH * 0.5f;
             g.DrawLine(dash, cx - 8f, cy, cx + 8f, cy);
@@ -556,14 +586,14 @@ public sealed class RenderSystem
 
         var t = state.ActivePowerUp.Value;
         Color c = GetPowerUpColor(t);
-        using var halo = new SolidBrush(Color.FromArgb(95, c));
+        var halo = GetCachedBrush(Color.FromArgb(95, c));
         g.FillEllipse(halo, iconX - 2f, iconY - 2f, sizeW + 4f, sizeH + 4f);
-        using var border = new Pen(Color.FromArgb(255, 255, 255, 255), 2f);
+        var border = GetCachedPen(Color.FromArgb(255, 255, 255, 255), 2f);
         g.DrawEllipse(border, iconX - 1f, iconY - 1f, sizeW + 1f, sizeH + 1f);
         DrawPowerUpGlyph(g, t, c, iconX + 4f, iconY + 4f, sizeW - 8f, sizeH - 8f);
 
         string label = GetPowerUpHudLabel(t);
-        using var labelBr = new SolidBrush(Color.FromArgb(248, 252, 255));
+        var labelBr = GetCachedBrush(Color.FromArgb(248, 252, 255));
         var labelFont = Ui7BoldFont;
         SizeF labelSize = g.MeasureString(label, labelFont);
         float labelX = panelX + (panelW - labelSize.Width) * 0.5f;
@@ -576,8 +606,8 @@ public sealed class RenderSystem
             float barPad = 8f;
             float barW = panelW - barPad * 2f;
             float barY = labelY + labelSize.Height + 2f;
-            using var bg = new SolidBrush(Color.FromArgb(110, 30, 40, 55));
-            using var fg = new SolidBrush(Color.FromArgb(230, c));
+            var bg = GetCachedBrush(Color.FromArgb(110, 30, 40, 55));
+            var fg = GetCachedBrush(Color.FromArgb(230, c));
             g.FillRectangle(bg, panelX + barPad, barY, barW, 4f);
             g.FillRectangle(fg, panelX + barPad, barY, barW * r, 4f);
         }
@@ -588,15 +618,15 @@ public sealed class RenderSystem
     {
         float cx = x + w * 0.5f;
         float cy = y + h * 0.5f;
-        using var fill = new SolidBrush(c);
-        using var outline = new Pen(Color.FromArgb(220, 20, 20, 30), 1.2f);
+        var fill = GetCachedBrush(c);
+        var outline = GetCachedPen(Color.FromArgb(220, 20, 20, 30), 1.2f);
 
         switch (type)
         {
             case PowerUpType.RapidFire:
             {
                 g.FillEllipse(fill, cx - w * 0.35f, cy - h * 0.35f, w * 0.7f, h * 0.7f);
-                using var streak = new Pen(Color.FromArgb(255, 255, 240, 200), 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                var streak = GetCachedPen(Color.FromArgb(255, 255, 240, 200), 2f, startCap: LineCap.Round, endCap: LineCap.Round);
                 g.DrawLine(streak, cx - w * 0.15f, cy, cx + w * 0.42f, cy - h * 0.12f);
                 g.DrawLine(streak, cx - w * 0.15f, cy + 2f, cx + w * 0.42f, cy + h * 0.1f);
                 break;
@@ -627,28 +657,31 @@ public sealed class RenderSystem
                 float bh = h * 0.78f;
                 float bx = cx - bw * 0.5f;
                 float by = cy - bh * 0.42f;
-                using var shieldPath = new GraphicsPath();
-                shieldPath.AddArc(bx, by, bw, bh * 0.55f, 180f, 180f);
-                shieldPath.AddLine(bx + bw, by + bh * 0.28f, bx + bw * 0.5f, y + h - 3f);
-                shieldPath.AddLine(bx + bw * 0.5f, y + h - 3f, bx, by + bh * 0.28f);
-                shieldPath.CloseFigure();
-                g.FillPath(fill, shieldPath);
-                g.DrawPath(outline, shieldPath);
+                PointF[] shield =
+                [
+                    new(bx + bw * 0.08f, by + bh * 0.2f),
+                    new(bx + bw * 0.32f, by + bh * 0.02f),
+                    new(bx + bw * 0.68f, by + bh * 0.02f),
+                    new(bx + bw * 0.92f, by + bh * 0.2f),
+                    new(bx + bw * 0.5f, y + h - 3f)
+                ];
+                g.FillPolygon(fill, shield);
+                g.DrawPolygon(outline, shield);
                 break;
             }
             case PowerUpType.SlowMotion:
             {
                 g.FillEllipse(fill, cx - w * 0.38f, cy - h * 0.38f, w * 0.76f, h * 0.76f);
-                using var sweep = new Pen(Color.FromArgb(255, 255, 255, 255), 2.2f) { StartCap = LineCap.Round };
+                var sweep = GetCachedPen(Color.FromArgb(255, 255, 255, 255), 2.2f, startCap: LineCap.Round);
                 g.DrawArc(sweep, cx - w * 0.32f, cy - h * 0.32f, w * 0.64f, h * 0.64f, 200f, 220f);
-                using var tick = new Pen(Color.FromArgb(255, 255, 255, 255), 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                var tick = GetCachedPen(Color.FromArgb(255, 255, 255, 255), 1.8f, startCap: LineCap.Round, endCap: LineCap.Round);
                 g.DrawLine(tick, cx, cy, cx + w * 0.22f, cy - h * 0.18f);
                 break;
             }
             case PowerUpType.BombShot:
             {
                 g.FillEllipse(fill, cx - w * 0.32f, cy - h * 0.25f, w * 0.64f, h * 0.55f);
-                using var fuse = new Pen(Color.FromArgb(255, 255, 230, 160), 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                var fuse = GetCachedPen(Color.FromArgb(255, 255, 230, 160), 2f, startCap: LineCap.Round, endCap: LineCap.Round);
                 g.DrawLine(fuse, cx + w * 0.12f, cy - h * 0.28f, cx + w * 0.28f, cy - h * 0.48f);
                 g.DrawEllipse(outline, cx - w * 0.32f, cy - h * 0.25f, w * 0.64f, h * 0.55f);
                 break;
@@ -697,8 +730,8 @@ public sealed class RenderSystem
     {
         float r = size * 0.35f;
         float topY = y + size * 0.18f;
-        using var fill = new SolidBrush(active ? Color.FromArgb(244, 72, 94) : Color.FromArgb(78, 78, 92));
-        using var outline = new Pen(Color.FromArgb(170, 0, 0, 0), 1f);
+        var fill = GetCachedBrush(active ? Color.FromArgb(244, 72, 94) : Color.FromArgb(78, 78, 92));
+        var outline = GetCachedPen(Color.FromArgb(170, 0, 0, 0));
 
         g.FillEllipse(fill, x, topY, r * 2f, r * 2f);
         g.FillEllipse(fill, x + r * 1.2f, topY, r * 2f, r * 2f);
@@ -735,9 +768,9 @@ public sealed class RenderSystem
         DrawPanelFrame(g, panelX, panelY, panelW, panelH);
 
         var titleFont = GetCachedFont(uiFont, uiFont.Size + 3f, FontStyle.Bold);
-        using var titleBr = new SolidBrush(Color.FromArgb(245, 230, 245, 255));
+        var titleBr = GetCachedBrush(Color.FromArgb(245, 230, 245, 255));
         DrawCenteredText(g, "FINAL RESULTS", titleFont, titleBr, clientWidth, panelY + 10f);
-        using var separatorPen = new Pen(Color.FromArgb(170, 95, 205, 255), 1f);
+        var separatorPen = GetCachedPen(Color.FromArgb(170, 95, 205, 255));
         g.DrawLine(separatorPen, panelX + 14f, panelY + 38f, panelX + panelW - 14f, panelY + 38f);
 
         float labelX = panelX + 18f;
@@ -758,13 +791,13 @@ public sealed class RenderSystem
         float y = startY;
         float x = (clientWidth - titleSize.Width) * 0.5f;
 
-        using var glowBr = new SolidBrush(Color.FromArgb(80, 255, 110, 70));
+        var glowBr = GetCachedBrush(Color.FromArgb(80, 255, 110, 70));
         g.DrawString(title, titleFont, glowBr, x - 2f, y);
         g.DrawString(title, titleFont, glowBr, x + 2f, y);
         g.DrawString(title, titleFont, glowBr, x, y - 2f);
         g.DrawString(title, titleFont, glowBr, x, y + 2f);
 
-        using var coreBr = new SolidBrush(Color.FromArgb(255, 255, 135, 80));
+        var coreBr = GetCachedBrush(Color.FromArgb(255, 255, 135, 80));
         g.DrawString(title, titleFont, coreBr, x, y);
 
         float lineY = y + titleSize.Height * 0.55f;
@@ -774,7 +807,7 @@ public sealed class RenderSystem
         float leftEnd = x - gap;
         float rightStart = x + titleSize.Width + gap;
         float rightEnd = clientWidth - margin;
-        using var linePen = new Pen(Color.FromArgb(140, 255, 120, 80), 1.4f);
+        var linePen = GetCachedPen(Color.FromArgb(140, 255, 120, 80), 1.4f);
         if (leftEnd - leftStart > 10f) g.DrawLine(linePen, leftStart, lineY, leftEnd, lineY);
         if (rightEnd - rightStart > 10f) g.DrawLine(linePen, rightStart, lineY, rightEnd, lineY);
 
@@ -805,9 +838,9 @@ public sealed class RenderSystem
         DrawPanelFrame(g, panelX, panelY, panelW, panelH);
 
         var titleFont = GetCachedFont(uiFont, uiFont.Size + 4f, FontStyle.Bold);
-        using var titleBr = new SolidBrush(Color.FromArgb(245, 230, 245, 255));
+        var titleBr = GetCachedBrush(Color.FromArgb(245, 230, 245, 255));
         DrawCenteredText(g, "LEADERBOARD", titleFont, titleBr, clientWidth, panelY + 12f);
-        using var separatorPen = new Pen(Color.FromArgb(170, 95, 205, 255), 1f);
+        var separatorPen = GetCachedPen(Color.FromArgb(170, 95, 205, 255));
         g.DrawLine(separatorPen, panelX + 14f, panelY + 42f, panelX + panelW - 14f, panelY + 42f);
 
         float rankNameX = panelX + 18f;
@@ -815,7 +848,7 @@ public sealed class RenderSystem
         float rowsY = panelY + 50f;
 
         var headerFont = GetCachedFont(uiFont, uiFont.Size - 0.5f, FontStyle.Bold);
-        using var headerBr = new SolidBrush(Color.FromArgb(205, 200, 220, 238));
+        var headerBr = GetCachedBrush(Color.FromArgb(205, 200, 220, 238));
         g.DrawString("RANK  NAME", headerFont, headerBr, rankNameX, rowsY);
         string scoreHdr = "SCORE";
         float scoreHdrW = g.MeasureString(scoreHdr, headerFont).Width;
@@ -823,7 +856,7 @@ public sealed class RenderSystem
 
         if (leaderboard.Count == 0)
         {
-            using var emptyBr = new SolidBrush(Color.FromArgb(225, 225, 232, 242));
+            var emptyBr = GetCachedBrush(Color.FromArgb(225, 225, 232, 242));
             DrawCenteredText(g, "No scores yet", uiFont, emptyBr, clientWidth, rowsY + 26f);
             return panelY + panelH;
         }
@@ -839,7 +872,7 @@ public sealed class RenderSystem
 
             if (isCurrent)
             {
-                using var rowHighlight = new SolidBrush(Color.FromArgb(80, 70, 190, 255));
+                var rowHighlight = GetCachedBrush(Color.FromArgb(80, 70, 190, 255));
                 g.FillRectangle(rowHighlight, panelX + 10f, y - 1f, panelW - 20f, rowH - 2f);
             }
 
@@ -847,7 +880,7 @@ public sealed class RenderSystem
             string scoreText = entry.Score.ToString();
 
             var rowFont = GetCachedFont(uiFont, uiFont.Size, isCurrent || isTop ? FontStyle.Bold : FontStyle.Regular);
-            using var rowBrush = new SolidBrush(
+            var rowBrush = GetCachedBrush(
                 isCurrent
                     ? Color.FromArgb(255, 175, 245, 255)
                     : isTop
@@ -865,11 +898,11 @@ public sealed class RenderSystem
 
     private static void DrawPanelFrame(Graphics g, float x, float y, float width, float height)
     {
-        using var panelBr = new SolidBrush(Color.FromArgb(170, 8, 16, 34));
+        var panelBr = GetCachedBrush(Color.FromArgb(170, 8, 16, 34));
         g.FillRectangle(panelBr, x, y, width, height);
-        using var glowPen = new Pen(Color.FromArgb(90, 100, 230, 255), 5f);
+        var glowPen = GetCachedPen(Color.FromArgb(90, 100, 230, 255), 5f);
         g.DrawRectangle(glowPen, x - 1f, y - 1f, width + 2f, height + 2f);
-        using var borderPen = new Pen(Color.FromArgb(220, 120, 245, 255), 1.6f);
+        var borderPen = GetCachedPen(Color.FromArgb(220, 120, 245, 255), 1.6f);
         g.DrawRectangle(borderPen, x, y, width, height);
     }
 
@@ -884,8 +917,8 @@ public sealed class RenderSystem
         bool isHighlight)
     {
         var rowFont = GetCachedFont(uiFont, uiFont.Size + 0.5f, isHighlight ? FontStyle.Bold : FontStyle.Regular);
-        using var labelBr = new SolidBrush(Color.FromArgb(215, 210, 224, 240));
-        using var valueBr = new SolidBrush(isHighlight ? Color.FromArgb(255, 255, 225, 120) : Color.FromArgb(240, 235, 242, 250));
+        var labelBr = GetCachedBrush(Color.FromArgb(215, 210, 224, 240));
+        var valueBr = GetCachedBrush(isHighlight ? Color.FromArgb(255, 255, 225, 120) : Color.FromArgb(240, 235, 242, 250));
         g.DrawString(label, rowFont, labelBr, labelX, y);
         float valueWidth = g.MeasureString(value, rowFont).Width;
         g.DrawString(value, rowFont, valueBr, valueRightX - valueWidth, y);
@@ -893,7 +926,7 @@ public sealed class RenderSystem
         {
             const string newBest = "NEW BEST";
             var tagFont = GetCachedFont(uiFont, uiFont.Size - 1f, FontStyle.Bold);
-            using var tagBr = new SolidBrush(Color.FromArgb(255, 255, 210, 95));
+            var tagBr = GetCachedBrush(Color.FromArgb(255, 255, 210, 95));
             g.DrawString(newBest, tagFont, tagBr, labelX + 170f, y + 1f);
         }
     }
@@ -916,6 +949,7 @@ public sealed class RenderSystem
         }
     }
 
+    /// <summary>Draws layered synthwave background passes behind gameplay entities.</summary>
     private static void DrawBackground(Graphics g, int w, int h)
     {
         DrawSynthwaveGradient(g, w, h);
@@ -927,25 +961,24 @@ public sealed class RenderSystem
     /// <summary>Vertical multi-stop gradient: deep purple-blue → magenta → warm sunset.</summary>
     private static void DrawSynthwaveGradient(Graphics g, int w, int h)
     {
-        var rect = new Rectangle(0, 0, w, Math.Max(1, h));
-        using var sky = new LinearGradientBrush(
-            rect,
-            Color.FromArgb(255, 14, 8, 40),
-            Color.FromArgb(255, 255, 195, 75),
-            LinearGradientMode.Vertical);
-        var blend = new ColorBlend(4)
+        int hh = Math.Max(1, h);
+        // Rebuild only when viewport dimensions change; otherwise reuse the brush each frame.
+        if (CachedSkyBrush is null || CachedSkyWidth != w || CachedSkyHeight != hh)
         {
-            Positions = new[] { 0f, 0.34f, 0.64f, 1f },
-            Colors = new[]
+            CachedSkyBrush?.Dispose();
+            CachedSkyBrush = new LinearGradientBrush(
+                new Rectangle(0, 0, w, hh),
+                Color.FromArgb(255, 14, 8, 40),
+                Color.FromArgb(255, 255, 195, 75),
+                LinearGradientMode.Vertical)
             {
-                Color.FromArgb(255, 16, 10, 46),
-                Color.FromArgb(255, 58, 16, 82),
-                Color.FromArgb(255, 215, 65, 110),
-                Color.FromArgb(255, 255, 188, 72)
-            }
-        };
-        sky.InterpolationColors = blend;
-        g.FillRectangle(sky, 0, 0, w, h);
+                InterpolationColors = SkyGradientBlend
+            };
+            CachedSkyWidth = w;
+            CachedSkyHeight = hh;
+        }
+
+        g.FillRectangle(CachedSkyBrush, 0, 0, w, hh);
     }
 
     /// <summary>Large sunset disk with horizontal scanlines (retro CRT striping).</summary>
@@ -955,35 +988,29 @@ public sealed class RenderSystem
         float cx = w * 0.5f;
         float cy = h + sunR * 0.82f;
 
-        using (var disk = new SolidBrush(Color.FromArgb(230, 255, 205, 70)))
-            g.FillEllipse(disk, cx - sunR, cy - sunR, sunR * 2f, sunR * 2f);
+        g.FillEllipse(GetCachedBrush(Color.FromArgb(230, 255, 205, 70)), cx - sunR, cy - sunR, sunR * 2f, sunR * 2f);
 
-        using var rim = new Pen(Color.FromArgb(180, 255, 230, 120), 1.2f);
+        var rim = GetCachedPen(Color.FromArgb(180, 255, 230, 120), 1.2f);
         g.DrawEllipse(rim, cx - sunR, cy - sunR, sunR * 2f, sunR * 2f);
 
-        using var sunPath = new GraphicsPath();
-        sunPath.AddEllipse(cx - sunR, cy - sunR, sunR * 2f, sunR * 2f);
-
-        GraphicsState saved = g.Save();
-        try
+        // Draw scanlines using circle intersection math to avoid temporary clip paths.
+        float y0 = cy - sunR;
+        float y1 = Math.Min(h + 2f, cy + sunR);
+        var stripe = GetCachedPen(Color.FromArgb(55, 210, 90, 45));
+        for (float y = y0; y <= y1; y += 5f)
         {
-            g.SetClip(sunPath);
-            using var stripe = new Pen(Color.FromArgb(55, 210, 90, 45), 1f);
-            float y0 = cy - sunR;
-            float y1 = Math.Min(h + 2f, cy + sunR);
-            for (float y = y0; y <= y1; y += 5f)
-                g.DrawLine(stripe, cx - sunR - 2f, y, cx + sunR + 2f, y);
-        }
-        finally
-        {
-            g.Restore(saved);
+            float dy = y - cy;
+            float inside = sunR * sunR - dy * dy;
+            if (inside <= 0f) continue;
+            float half = MathF.Sqrt(inside);
+            g.DrawLine(stripe, cx - half, y, cx + half, y);
         }
     }
 
     /// <summary>Dark building silhouettes along the bottom (simple rects, deterministic layout).</summary>
     private static void DrawSynthwaveSkyline(Graphics g, int w, int h)
     {
-        using var sil = new SolidBrush(Color.FromArgb(252, 6, 4, 18));
+        var sil = GetCachedBrush(Color.FromArgb(252, 6, 4, 18));
         float x = -6f;
         int idx = 0;
         while (x < w + 8f)
@@ -1002,8 +1029,8 @@ public sealed class RenderSystem
     private static void DrawSynthwaveGrid(Graphics g, int w, int h)
     {
         const int step = GameConfig.Visual.BombGridStep;
-        using var vPen = new Pen(Color.FromArgb(36, 190, 95, 255), 0.65f);
-        using var hPen = new Pen(Color.FromArgb(32, 255, 70, 210), 0.65f);
+        var vPen = GetCachedPen(Color.FromArgb(36, 190, 95, 255), 0.65f);
+        var hPen = GetCachedPen(Color.FromArgb(32, 255, 70, 210), 0.65f);
         for (int x = 0; x < w; x += step)
             g.DrawLine(vPen, x, 0, x, h);
         for (int y = 0; y < h; y += step)
@@ -1047,14 +1074,128 @@ public sealed class RenderSystem
             (int)(from.B + (to.B - from.B) * u));
     }
 
+    /// <summary>Returns a shared font instance keyed by family/size/style.</summary>
     private static Font GetCachedFont(Font baseFont, float size, FontStyle style)
     {
         string key = $"{baseFont.FontFamily.Name}|{size:0.##}|{(int)style}";
         if (FontCache.TryGetValue(key, out Font? cached))
+        {
+            TouchKey(FontLru, FontNodes, key);
             return cached;
+        }
+
+        EnsureCacheCapacity(FontCache, FontLru, FontNodes, MaxFontCacheEntries, static disposable => disposable.Dispose());
 
         var created = new Font(baseFont.FontFamily, size, style, GraphicsUnit.Point);
         FontCache[key] = created;
+        TouchKey(FontLru, FontNodes, key);
         return created;
+    }
+
+    /// <summary>Returns a shared solid brush keyed by ARGB color.</summary>
+    private static SolidBrush GetCachedBrush(Color color)
+    {
+        int key = color.ToArgb();
+        if (BrushCache.TryGetValue(key, out SolidBrush? cached))
+        {
+            TouchKey(BrushLru, BrushNodes, key);
+            return cached;
+        }
+        EnsureCacheCapacity(BrushCache, BrushLru, BrushNodes, MaxBrushCacheEntries, static disposable => disposable.Dispose());
+        var created = new SolidBrush(color);
+        BrushCache[key] = created;
+        TouchKey(BrushLru, BrushNodes, key);
+        return created;
+    }
+
+    /// <summary>Returns a shared pen keyed by color/width/stroke style parameters.</summary>
+    private static Pen GetCachedPen(
+        Color color,
+        float width = 1f,
+        DashStyle dash = DashStyle.Solid,
+        LineCap startCap = LineCap.Flat,
+        LineCap endCap = LineCap.Flat,
+        LineJoin join = LineJoin.Miter)
+    {
+        string key = $"{color.ToArgb()}|{width:0.###}|{(int)dash}|{(int)startCap}|{(int)endCap}|{(int)join}";
+        if (PenCache.TryGetValue(key, out Pen? cached))
+        {
+            TouchKey(PenLru, PenNodes, key);
+            return cached;
+        }
+
+        EnsureCacheCapacity(PenCache, PenLru, PenNodes, MaxPenCacheEntries, static disposable => disposable.Dispose());
+
+        var created = new Pen(color, width)
+        {
+            DashStyle = dash,
+            StartCap = startCap,
+            EndCap = endCap,
+            LineJoin = join
+        };
+        PenCache[key] = created;
+        TouchKey(PenLru, PenNodes, key);
+        return created;
+    }
+
+    /// <summary>
+    /// Disposes and clears all static pen/brush/font caches and the viewport-sized sky <see cref="LinearGradientBrush"/>.
+    /// Safe to call more than once (subsequent calls are no-ops until caches are repopulated by drawing).
+    /// </summary>
+    public static void DisposeSharedResources()
+    {
+        DisposeCache(FontCache, FontLru, FontNodes, static disposable => disposable.Dispose());
+        DisposeCache(BrushCache, BrushLru, BrushNodes, static disposable => disposable.Dispose());
+        DisposeCache(PenCache, PenLru, PenNodes, static disposable => disposable.Dispose());
+        CachedSkyBrush?.Dispose();
+        CachedSkyBrush = null;
+        CachedSkyWidth = -1;
+        CachedSkyHeight = -1;
+    }
+
+    private static void TouchKey<TKey>(
+        LinkedList<TKey> lru,
+        Dictionary<TKey, LinkedListNode<TKey>> nodes,
+        TKey key) where TKey : notnull
+    {
+        if (nodes.TryGetValue(key, out LinkedListNode<TKey>? existing))
+        {
+            lru.Remove(existing);
+            lru.AddLast(existing);
+            return;
+        }
+
+        LinkedListNode<TKey> node = lru.AddLast(key);
+        nodes[key] = node;
+    }
+
+    private static void EnsureCacheCapacity<TKey, TValue>(
+        Dictionary<TKey, TValue> cache,
+        LinkedList<TKey> lru,
+        Dictionary<TKey, LinkedListNode<TKey>> nodes,
+        int maxEntries,
+        Action<TValue> disposer) where TKey : notnull where TValue : class
+    {
+        while (cache.Count >= maxEntries && lru.First is not null)
+        {
+            TKey keyToEvict = lru.First.Value;
+            lru.RemoveFirst();
+            nodes.Remove(keyToEvict);
+            if (!cache.Remove(keyToEvict, out TValue? evicted)) continue;
+            disposer(evicted);
+        }
+    }
+
+    private static void DisposeCache<TKey, TValue>(
+        Dictionary<TKey, TValue> cache,
+        LinkedList<TKey> lru,
+        Dictionary<TKey, LinkedListNode<TKey>> nodes,
+        Action<TValue> disposer) where TKey : notnull where TValue : class
+    {
+        foreach (TValue value in cache.Values)
+            disposer(value);
+        cache.Clear();
+        lru.Clear();
+        nodes.Clear();
     }
 }

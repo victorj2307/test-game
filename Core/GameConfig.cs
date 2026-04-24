@@ -223,7 +223,7 @@ public static class GameConfig
     /// </summary>
     public static class Ui
     {
-        public const string WindowTitle = "RetroArcade (WinForms)"; // Main form title for branding consistency.
+        public const string WindowTitle = "RetroArcade"; // Main form title for branding consistency.
         public const int TargetFps = 60; // Baseline used for delta-time scaling to preserve gameplay feel.
         public const int WindowWidth = 480; // Default form client width.
         public const int WindowHeight = 640; // Default form client height.

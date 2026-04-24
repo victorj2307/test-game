@@ -1,6 +1,6 @@
-# Retro Blaster
+# RetroArcade
 
-**Retro Blaster** is a small, educational **retro-style 2D arcade** game for **Windows**, written in **C#** with **Windows Forms (WinForms)**. The player controls a cannon at the bottom of the screen, shoots upward, and destroys falling vertical “bar” enemies. The project uses **only** the .NET BCL and WinForms—**no game engines** and **no third-party NuGet packages**—so the code stays easy to read, learn from, and modify.
+**RetroArcade** is a small, educational **retro-style 2D arcade** game for **Windows**, written in **C#** with **Windows Forms (WinForms)**. The player controls a cannon at the bottom of the screen, shoots upward, and destroys falling vertical “bar” enemies. The runtime game app uses only .NET BCL + WinForms APIs (no game engines or external runtime rendering/audio libraries). The test project uses standard test packages (`MSTest`, test SDK, coverlet).
 
 Simulation and rendering are split into a thin **`Game.Core.GameManager`** orchestrator plus **`Game.Core.GameState`**, **`Game.Core.EntityManager`**, and small **`Game.Systems.*`** classes (spawn, collision, difficulty, render) so responsibilities stay clear without a heavy framework.
 
@@ -23,6 +23,8 @@ Simulation and rendering are split into a thin **`Game.Core.GameManager`** orche
 11. [How the game loop works](#how-the-game-loop-works)
 12. [Tuning & constants](#tuning--constants)
 13. [Design notes & limitations](#design-notes--limitations)
+14. [Performance and failure behavior](#performance-and-failure-behavior)
+15. [Test coverage status](#test-coverage-status)
 
 ---
 
@@ -33,7 +35,7 @@ Simulation and rendering are split into a thin **`Game.Core.GameManager`** orche
 | **Language** | C# | Nullable reference types enabled (`<Nullable>enable</Nullable>`). |
 | **Runtime / SDK** | .NET 8 | Windows-only project (`net8.0-windows`). |
 | **UI framework** | Windows Forms | `UseWindowsForms` in the project file; main window is a `Form`. |
-| **Graphics** | **GDI+** via `System.Drawing` | `Graphics`, `Pen`, `Brush`, `Rectangle`, `Color`, `Font`, `SmoothingMode`, etc. Gameplay rendering runs from `GameForm.OnPaint` → `RenderSystem.Draw` (not per-entity controls). |
+| **Graphics** | **GDI+** via `System.Drawing` | `Graphics`, `Pen`, `Brush`, `Rectangle`, `Color`, `Font`, `SmoothingMode`, etc. Gameplay rendering runs from `GameForm.OnPaint` → `RenderSystem.Draw` (not per-entity controls). Hot-path **pen/brush/font** reuse uses **bounded LRU caches** (evicted entries are disposed); **`RenderSystem.DisposeSharedResources`** clears caches and the sky gradient when the main form closes (`GameManager.DisposeResources`). |
 | **Game loop** | **`System.Windows.Forms.Timer`** (~**16 ms**) + **`Stopwatch`** | **`WM_TIMER`** drives **`GameLoopTick`**: one **`GameManager.Update`** per tick and **`Invalidate`** every tick (including **pause**), so **`OnPaint`** keeps running and overlays stay visible. **`Stopwatch`** measures real elapsed time between ticks (passed as **`deltaSeconds`**) for HUD / future tuning — avoids **`Application.Idle`** tight-spin starving **`WM_PAINT`**. |
 | **Input** | Keyboard + WinForms controls | `KeyPreview` on the form, `KeyDown` / `KeyUp`, and a `HashSet<Keys>` for held keys. **Space (held)** with a **~100 ms** cooldown in `GameManager` for auto-fire. **ESC** toggles pause/resume (disabled during life-lost and game-over states). **F1** toggles debug draw in all builds. **F2** and dev **1–6** hotkeys are compiled only under **`#if DEBUG`** (`GameForm`, `GameManager.ToggleDevMode` / `TryDevActivatePowerUpDigit`); **Release** builds cannot turn dev mode on from the keyboard, and **`ResetRun`** forces **`IsDevMode = false`** (`#if !DEBUG` in `GameState`). During life-lost pause, **Enter/Space** continues. |
 | **Entry point** | `Program.cs` | `[STAThread]`, `ApplicationConfiguration.Initialize()` (high-DPI / WinForms bootstrap in modern .NET), `Application.Run(new GameForm())`. |
@@ -49,7 +51,7 @@ Simulation and rendering are split into a thin **`Game.Core.GameManager`** orche
 ### Gameplay
 
 - **Cannon (player)** — Rectangle at the **bottom** of the play area; horizontal movement is **discrete steps** (half bar width), **grid-snapped**, with a **difficulty-scaled per-direction cooldown** so control remains fair as bars speed up.
-- **Lives system** — Each run starts with **3 lives**. A bar reaching the floor removes one life instead of ending immediately. The run ends only when lives reach **0**.
+- **Lives system** — Each run starts with **`GameConfig.Scoring.StartingLives`** lives (default **3**). **`GameState.MaxLives`** mirrors that value for HUD/life-lost overlay layout. A bar reaching the floor removes one life instead of ending immediately. The run ends only when lives reach **0**.
 - **Bullets** — Fired **straight up**; many bullets can exist at once. Off-screen removal when they leave the **top** of the play area.
 - **Enemies (bars)** — **Vertical** rectangles that **fall** from the top. Width comes from **`GameConfig.Bars.Width`** (24 px); height and type vary by **`BarType`** (Normal, Fast, Tank).
 - **Natural bar entry** — New bars spawn above the playfield and move downward at their normal fall speed. Spawn Y is computed per column overlap as `min(-height, highestOverlappingBarY - height)`, so new bars always appear above existing bars in that lane.
@@ -67,7 +69,7 @@ Simulation and rendering are split into a thin **`Game.Core.GameManager`** orche
 
 - **Start gate** — Simulation does not advance until **Start** (or **Enter** as `AcceptButton`). After game over, **Play again** returns and the **idle-driven loop** stays off until a new start.
 - **Muzzle / shot line** — Gold muzzle port and warm aim line align with **`Player.GetBulletSpawn`** / **`MuzzleTopCenter`**.
-- **HUD** — Visual HUD with **life icons** (top-left), a boxed **SCORE** label+value (top-right), secondary **BEST** beneath it, emphasized **COMBO** when active, and a **centered active power-up card**: large colored glyph on top, short **uppercase** label beneath (**RAPID**, **MULTI**, **PIERCE**, **SHIELD**, **SLOW**, **BOMB**), plus a **timer bar** when the effect is timed.
+- **HUD** — Visual HUD with **life icons** (top-left; count matches **`MaxLives`**), a boxed **SCORE** label+value (top-right), secondary **BEST** beneath it, emphasized **COMBO** when active, and a **centered active power-up card**: large colored glyph on top, short **uppercase** label beneath (**RAPID**, **MULTI**, **PIERCE**, **SHIELD**, **SLOW**, **BOMB**), plus a **timer bar** when the effect is timed.
 - **Overlays** — Attract: **READY?** + start hint. Pause: semi-transparent overlay with **PAUSED** and an ESC continue hint. Life lost: semi-transparent overlay with **LIFE LOST**, remaining life icons, continue hint, and dedicated life-lost SFX. Game over: darker/stronger overlay that presents **FINAL RESULTS**, a glowing **GAME OVER** title, and leaderboard panel.
 - **Status bar** — Docked bottom **`Panel` + `Label`**; play height = client height minus bar height; **`OnPaint`** clips to the play rectangle.
 - **Double-buffered** form to reduce flicker.
@@ -88,10 +90,10 @@ Simulation and rendering are split into a thin **`Game.Core.GameManager`** orche
 - **Bars** — Thin dark outline for separation from the grid.
 - **Screen shake** — ~1 px for a short time on destroy, life lost, and game over; **bomb detonation** adds a separate **~2 px** pattern for **`BombHeavyShakeFrames`** while the flash fades. **Shield block** uses a small dedicated shake pattern (**`ShieldImpactShakeFrames`**) plus **`ShakeUntilTickMs`** extension from **`TryConsumeShield`** (does not stack with bomb’s heavy shake while bomb frames run).
 - **Life-lost flash** — Short red flash fade (`LifeLostFlashFrames`) when a life is consumed.
-- **Power-ups** — Destroyed bars can drop collectibles: Rapid Fire, Multi Shot, Piercing Shot, Shield, Slow Motion, Bomb Shot. Effects are applied immediately on collection. The HUD uses a **visual-first** slot: each type has a **distinct color** and **simple drawn symbol** (speed streaks, triple dots, diamond, shield path, clock arc, bomb+fuse) in [`RenderSystem`](Rendering/RenderSystem.cs) (`DrawPowerUpGlyph` / `GetPowerUpHudLabel`), not long technical names. Timed effects show a **progress bar** under the label when `ActivePowerUpDurationFrames` is set. **Bomb Shot** does **not** use bullets: on pickup, **`GameState`** stores a **random point** in the playfield and a **frame fuse** (~12–31 frames ≈ **200–500 ms**); [`RenderSystem.DrawBombFuseIndicator`](Rendering/RenderSystem.cs) shows a pulsing marker; when the fuse hits zero, **`CollisionSystem.ExecuteBombExplosionAt`** runs a **hybrid cull**: active bars are **sorted by danger** (lowest on screen / largest **bottom** Y first, then distance to the blast point), then **`floor(count × 0.72)`** of them are **destroyed** (capped so at least one bar can survive when **count ≥ 2**); remaining bars inside a **splash radius** take extra damage. Culled bars are **`DestroyBarAt`**’d **over several frames** in **distance order** (closest to the blast center first; **`CollisionSystem.TickPendingBombKills`**). **`ExplosionFx`** uses a **smooth-expanding** triple shockwave (**`ExpansionT`** easing, **`MaxWaveRadius`** ~168); **`DrawBombScreenFlash`** adds a brief **white/yellow** full-screen fade (`BombScreenFlashFrames`); see [Dev mode hotkeys](#dev-mode-hotkeys-debug-builds-only) for tester shortcut **3**.
+- **Power-ups** — Destroyed bars can drop collectibles: Rapid Fire, Multi Shot, Piercing Shot, Shield, Slow Motion, Bomb Shot. Effects are applied immediately on collection. The HUD uses a **visual-first** slot: each type has a **distinct color** and **simple drawn symbol** (speed streaks, triple dots, diamond, shield polygon, clock arc, bomb+fuse) in [`RenderSystem`](Rendering/RenderSystem.cs) (`DrawPowerUpGlyph` / `GetPowerUpHudLabel`), not long technical names. Timed effects show a **progress bar** under the label when `ActivePowerUpDurationFrames` is set. **Bomb Shot** does **not** use bullets: on pickup, **`GameState`** stores a **random point** in the playfield and a **frame fuse** (~12–31 frames ≈ **200–500 ms**); [`RenderSystem.DrawBombFuseIndicator`](Rendering/RenderSystem.cs) shows a pulsing marker; when the fuse hits zero, **`CollisionSystem.ExecuteBombExplosionAt`** runs a **hybrid cull**: active bars are **sorted by danger** (lowest on screen / largest **bottom** Y first, then distance to the blast point), then **`floor(count × 0.72)`** of them are **destroyed** (capped so at least one bar can survive when **count ≥ 2**); remaining bars inside a **splash radius** take extra damage. Culled bars are **`DestroyBarAt`**’d **over several frames** in **distance order** (closest to the blast center first; **`CollisionSystem.TickPendingBombKills`**). **`ExplosionFx`** uses a **smooth-expanding** triple shockwave (**`ExpansionT`** easing, **`MaxWaveRadius`** ~168); **`DrawBombScreenFlash`** adds a brief **white/yellow** full-screen fade (`BombScreenFlashFrames`); see [Dev mode hotkeys](#dev-mode-hotkeys-debug-builds-only) for tester shortcut **3**.
 - **Drop trigger coverage** — Drop roll runs on **every destroyed bar** through the collision-destroy path, using the same shared `Random` instance owned by `GameManager` (no per-frame re-creation).
 - **Start / Play again** — Large flat button, border, hover highlight (**`GameForm`**).
-- **Audio** — Procedural mono **44.1 kHz** sine WAV in memory (**`SoundGenerator`**), **cosine envelope**, **`SoundPlayer`** pool (12 slots) for overlapping **`Play()`**; **`GameAudio`** exposes shoot / hit / life lost / game over / **shield pickup** / **shield block** / **pierce hit**.
+- **Audio** — Procedural mono **44.1 kHz** sine WAV in memory (**`SoundGenerator`**), **cosine envelope**, and preloaded clip banks backed by a **`SoundPlayer`** pool (12 slots) for overlapping non-blocking **`Play()`** (no runtime `Load()` in hot paths); **`GameAudio`** exposes shoot / hit / life lost / game over / **shield pickup** / **shield block** / **pierce hit**.
 - **Leaderboard** — **`highscore.json`** via **`HighScoreStore`** stores **Top 10** entries (`Name`, `Score`, optional `DateUtc`). Names are normalized (`Trim`, case-insensitive match), and each player keeps only a single **best score** entry (no run-to-run accumulation). On game over, qualifying scores prompt for a nickname (default **PLAYER** if blank); the overlay shows a dedicated **FINAL RESULTS** panel (Score, Best Score, Max Combo) above the leaderboard using the same panel style.
 - **Debug (F1)** — Hitboxes, FPS (from form), entity counts; smaller, dimmer font.
 - **Dev mode (Debug builds only)** — **`GameState.IsDevMode`** is toggled with **F2**; number keys **1–6** (main row or numpad) grant power-ups while a run is active—see the [key table](#dev-mode-hotkeys-debug-builds-only). Compiled only with **`DEBUG`** (`#if DEBUG` in **`GameForm`** / **`GameManager.ToggleDevMode`**; **`TryDevActivatePowerUpDigit`** is empty in Release). Not cleared on **Start** / **Play again** while debugging. While on: easier difficulty (see above), boosted power-up drops, no life loss when a bar touches the floor. **Release** builds: dev flag is cleared on each **`ResetRun`**; gameplay dev branches never activate. Overlay: [`RenderSystem.DrawDevModeOverlay`](Rendering/RenderSystem.cs).
@@ -123,8 +125,7 @@ Clear falling **bars** before they reach the **bottom** of the playfield. Each f
 | **Hit feedback** | **`RegisterHit`** sets flash + pulse; **`GameAudio.PlayHit`**; impact particles and small directional fragments. **Piercing Shot** uses **`RegisterPierceHit`** (longer magenta flash), **`GameAudio.PlayPierceHit`**, and magenta-tinted hit effects. |
 | **Destroy** | When **`Height ≤ 0`**: bar removed, **`GameState.RegisterBarDestroyed(isSpecial)`** runs, then **`DifficultySystem.SyncBarSpeedFromScore`**. Special bars apply a **2x score multiplier** and add slightly stronger destroy feedback. |
 | **Combo** | If previous destroy was within **90 frames**, **`_combo`** increments; else reset to **1**. **Points added** = **`ComboMultiplier`** = **`min(_combo, 4)`**. |
-| **Leaderboard** | During play, **`HighScore`** updates in memory for HUD. At game over, if the final score qualifies for Top-10, name entry is requested and `HighScoreStore.TryAddScore(...)` saves leaderboard JSON using normalized-name best-score rules (case-insensitive, one row per player). |
-| **Kills window** | **`KillsInWindow`** increments on destroy and is still tracked for telemetry/debug pacing visibility. |
+| **Leaderboard** | During play, **`HighScore`** updates in memory for HUD. At game over, qualification for Top-N is checked against the **in-memory** leaderboard snapshot (**`GameManager.ScoreQualifiesFromEntries`**) so the tick path does not re-read disk before the modal prompt. If the score qualifies, name entry is requested and **`HighScoreStore.TryAddScore(...)`** persists JSON using normalized-name best-score rules (case-insensitive, one row per player), then the in-memory list reloads on successful save. |
 
 ### Difficulty (tuning table + interpolation)
 
@@ -170,7 +171,7 @@ WinForms standard: **origin top-left**, **Y** increases downward; bullets move b
 Source files are grouped by responsibility under top-level folders. Build outputs go under `bin/` and `obj/`.
 
 ```
-Retro Blaster (repo root)
+RetroArcade (repo root)
 ├── ArcadeGame.sln
 ├── ArcadeGame.csproj
 ├── Program.cs
@@ -201,7 +202,7 @@ Retro Blaster (repo root)
 └── readme.md
 ```
 
-At runtime, **`highscore.json`** may appear next to **`RetroArcade.exe`** after leaderboard updates are saved.
+At runtime, **`highscore.json`** is stored under `%AppData%/RetroArcade/` (with one-time migration from legacy executable-adjacent storage when present).
 
 Example `highscore.json`:
 
@@ -322,7 +323,9 @@ Shake transform → background + grid → danger line → bars (fill + outline +
 
 ### Audio
 
-**`SoundGenerator`** writes RIFF/WAVE PCM into **`MemoryStream`**, **`Load`**, **`Play()`**; streams kept alive per pool slot until replaced. **`GameAudio`** is the gameplay-facing API.
+**`SoundGenerator`** writes RIFF/WAVE PCM into **`MemoryStream`**, preloads clip banks up front (`Load()` during warmup only), then reuses preloaded players/streams for lightweight runtime `Play()`. **`GameAudio`** is the gameplay-facing API.
+
+Gameplay SFX and **`PlayTone`** bank lookups use a process-wide lock so lazy-created tone banks remain safe if **`PlayTone`** is ever invoked off the UI thread; normal gameplay still expects audio calls from the WinForms message loop.
 
 ### Persistence
 
@@ -339,12 +342,13 @@ Shake transform → background + grid → danger line → bars (fill + outline +
 | **Authoritative run numbers** | **`GameState`** (score, lives, flags including `IsLifeLost`, spawn countdown/interval, `BarSpeed`, combo, active power-up/timer, shake/flash, input timers). |
 | **World lists** | **`EntityManager`** (bars, bullets, particles, fragments, power-up drops, explosion FX—**not** the player). |
 | **Creating enemies** | **`SpawnSystem`** (random + lane + cluster + overlap + cap). |
-| **Hits & destroys** | **`CollisionSystem.Resolve`**: normal bullets stop on first bar; **piercing** bullets use **`Bullet.ConsumePierce`** and a repeat pass. Bullet hits spawn subtle directional fragments; bomb destruction uses staggered radial fragmentation for high-impact breakup. |
+| **Hits & destroys** | **`CollisionSystem.Resolve`**: normal bullets stop on first bar; **piercing** bullets use **`Bullet.ConsumePierce`** and repeat passes that skip already-hit bars in the same frame. Bullet hits spawn subtle directional fragments; bomb destruction uses staggered radial fragmentation for high-impact breakup. |
 | **Power-up activation** | **`GameManager`** + **`GameState`** (pickup activates immediately; one active power-up at a time). **Shield**: one charge (**`ShieldCharges`**), HUD **SHIELD**, cyan ellipse + glow on the player (**`RenderSystem.DrawShieldPlayerFx`**), pickup pulse + **`GameAudio.PlayShieldPickup`**, floor block via **`TryConsumeShield`** (ring burst, flash, **`PlayShieldBlock`**). **Bomb**: fuse + **`ExecuteBombExplosionAt`**, then staggered **`TickPendingBombKills`** + screen flash / heavy shake + **`ExplosionFx`**. |
 | **Difficulty table + interpolation** | **`DifficultySystem`**. |
-| **Drawing** | **`RenderSystem`** (all GDI+ for the playfield). |
+| **Drawing** | **`RenderSystem`** (all GDI+ for the playfield; bounded shared caches for pens/brushes/fonts). |
+| **Shared GDI cleanup** | **`GameForm`** `FormClosed` → **`GameManager.DisposeResources`** → **`RenderSystem.DisposeSharedResources`** (dispose cached pens/brushes/fonts and sky gradient). |
 
-**Construction order inside `GameManager`:** `DifficultySystem` → `SpawnSystem` → `CollisionSystem` (needs difficulty and spawn for post-destroy side effects) → `RenderSystem` (stateless).
+**Construction order inside `GameManager`:** `DifficultySystem` → `SpawnSystem` → `CollisionSystem` (needs difficulty and spawn for post-destroy side effects) → `RenderSystem` (per-instance draw helper; static caches are bounded and cleared on form shutdown).
 
 ---
 
@@ -383,7 +387,7 @@ Open **`ArcadeGame.sln`**, set startup project, F5 or Ctrl+F5.
 | **Move right** | **Right** or **D** |
 | **Fire** | **Hold Space** (~100 ms cooldown) |
 | **Pause / resume** | **ESC** (disabled during life-lost and game-over screens) |
-| **Lives** | Start with **3**; life loss clears only playfield + temporary timers (score/difficulty preserved) |
+| **Lives** | Start with **`GameConfig.Scoring.StartingLives`** (default **3**); life loss clears only playfield + temporary timers (score/difficulty preserved) |
 | **Continue after life loss** | **Enter** or **Space**, or click **Continue** button |
 | **Start / play again** | Button or **Enter** (`AcceptButton`) |
 | **Debug overlay** | **F1** (hitboxes, FPS, counts) |
@@ -418,7 +422,7 @@ These keys exist only in **Debug** builds (`#if DEBUG` in **`GameForm`**). **`Ga
   | `RapidFire` | RAPID | Orange | Filled circle + forward streak lines |
   | `MultiShot` | MULTI | Deep sky blue | Three filled circles in a row |
   | `PiercingShot` | PIERCE | Medium purple | Diamond (rotated square) |
-  | `Shield` | SHIELD | Light cyan (`ARGB` ~70,210,255) | Curved “shield” path (`GraphicsPath`) |
+  | `Shield` | SHIELD | Light cyan (`ARGB` ~70,210,255) | Filled shield polygon |
   | `SlowMotion` | SLOW | Cyan | Filled circle + clock arc + hand |
   | `BombShot` | BOMB | Orange red | Oval body + fuse line |
 
@@ -433,6 +437,7 @@ These keys exist only in **Debug** builds (`#if DEBUG` in **`GameForm`**). **`Ga
 3. Subsystems run in the order listed under [Simulation order](#architecture--design).
 4. **`Invalidate`** → **`OnPaint`** clips to play rect → **`GameManager.Draw`** → **`RenderSystem.Draw`**.
 5. All work stays on the **UI thread**.
+6. **Game over** — On the first tick where **`IsGameOver`** becomes true, **`GameForm`** stops the timer and clears **`_runGameLoop`** *before* **`HandleLeaderboardOnGameOver`** runs, so the modal name prompt does not overlap an active sim tick. **`FormClosed`** stops/disposes the timer and calls **`GameManager.DisposeResources()`** to release static render caches.
 
 ---
 
@@ -489,8 +494,7 @@ Rebuild after edits and smoke-test movement, spawn cap, combo, power-up activati
 - **Frame ordering matters** — floor-hit checks run before bullet collisions in the same frame, so a bar can still cost a life even if a bullet would also intersect it that frame.
 - **Mixed time sources** — simulation is largely frame/cooldown driven; `LastDeltaSeconds` is tracked but most movement logic is not delta-time physics.
 - **Visible vs full bar bounds** — gameplay collisions use visible clipped bar bounds (`GetBounds`), while spawn overlap checks use full bounds (`GetFullBounds`).
-- **Piercing behavior detail** — piercing bullets can process repeated collision passes while remaining intersecting, so “pierce” currently means extra collision iterations, not strictly guaranteed forward travel to a different bar.
-- **UI life icon count** — life rendering currently assumes 3 icons in HUD/life-lost overlay; if you change starting lives, update corresponding render layout.
+- **Piercing behavior detail** — within one resolve frame, piercing bullets do not repeatedly damage the same bar; additional pierce hits target other valid intersections.
 - **Leaderboard highlight nuance** — game-over leaderboard “current run” highlight matches by score value; ties can highlight an existing entry.
 
 ### Entry-point and threading assumptions
@@ -506,7 +510,7 @@ Rebuild after edits and smoke-test movement, spawn cap, combo, power-up activati
 - **Difficulty feels too abrupt** — adjust `GameConfig.Difficulty.Table` first, then smoothing factors.
 - **No leaderboard file appears** — `highscore.json` is written after a qualifying game-over save path is reached.
 - **Keys stop responding** — refocus the game window (`Focus()` is called on start, but OS focus can still be lost).
-- **Audio cuts under stress** — tune `SoundGenerator` pool/gain/jitter (`PoolSize`, `MasterGain`, pitch jitter), and note one-shot errors are intentionally swallowed.
+- **Audio cuts under stress** — tune `SoundGenerator` pool/gain/jitter (`PoolSize`, `MasterGain`, pitch jitter); one-shot failures are logged through `Debug.WriteLine` and safely skipped.
 
 ---
 
@@ -514,11 +518,44 @@ Rebuild after edits and smoke-test movement, spawn cap, combo, power-up activati
 
 - **Teaching focus** — Prefer reading **`GameManager`** then one system at a time; no hidden magic from frameworks.
 - **Rendering** — One paint path through **`RenderSystem`**; no sprite controls.
+- **Render caches** — Pen/brush/font caches are bounded and dispose evicted entries to limit long-session GDI growth.
 - **Threading** — Single-threaded; huge entity counts could stutter.
 - **Audio** — Procedural only; no bundled WAV assets.
 - **Resize** — Fixed form border in the sample; resize still reclamps the player via **`OnClientResize`**.
 - **Persistence** — Only local **`highscore.json`** leaderboard data; no settings file.
 - **Growth** — Further splits can stay in the same assembly (partial classes or helpers) without introducing a full engine.
+
+---
+
+## Performance and failure behavior
+
+- **UI-thread model** — Update, render, and most game-side IO/audio decisions happen on the WinForms UI thread; avoid heavy sync work in hot paths.
+- **Rendering** — Hot draw paths reuse **`Pen`**, **`SolidBrush`**, and **`Font`** instances through **capped LRU caches** (oldest entries disposed on eviction). **`LinearGradientBrush`** for the sky is one instance per client size until shutdown disposal.
+- **Bomb-heavy moments** — Explosion ranking/queue work can create short frame-time spikes at high entity counts; bomb ranking reuses internal scratch lists to reduce per-blast allocations.
+- **Audio fallback behavior** — Sound failures are logged to `Debug.WriteLine` and skipped safely (gameplay continues). Clip-bank dictionary mutations for dynamic tones are synchronized.
+- **Persistence fallback behavior** — High-score load/save failures are logged and fail closed to safe defaults.
+
+---
+
+## Test coverage status
+
+Current automated coverage (`RetroArcade.Tests`):
+
+- Spawn non-overlap behavior
+- Difficulty ramp/clamp behavior
+- High-score replacement semantics (best-only per player)
+- Piercing collision same-frame repeat-hit guard
+- Core invariants migrated from debug self-tests
+- In-memory leaderboard qualification rule
+
+Not yet covered (recommended next):
+
+- Life-lost/continue transition ordering
+- Shield floor-hit precedence
+- Bomb queue/stagger timing behavior
+- Pause/update ordering invariants
+
+Deep static audit notes are tracked in `full-code-audit.md`.
 
 ---
 
@@ -530,6 +567,6 @@ No license file is provided in this sample repository. If you distribute or shar
 
 ## Credits
 
-**Retro Blaster** — A minimal WinForms + GDI+ arcade sample: **`GameForm`** for hosting, **`GameManager`** for orchestration, **`GameState`** + **`EntityManager`** + **systems** for rules and presentation, and **`SoundGenerator`** for lightweight SFX.
+**RetroArcade** — A minimal WinForms + GDI+ arcade sample: **`GameForm`** for hosting, **`GameManager`** for orchestration, **`GameState`** + **`EntityManager`** + **systems** for rules and presentation, and **`SoundGenerator`** for lightweight SFX.
 
 For changes, run **`dotnet build`** frequently to catch regressions early.

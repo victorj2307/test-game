@@ -61,7 +61,6 @@ public sealed class DifficultySystem
             _lastAppliedEffectiveBarSpeed = effectiveSpeed;
             foreach (var b in _entities.Bars) b.SetTargetMoveSpeed(effectiveSpeed);
         }
-        _state.KillsInWindow = 0;
     }
 
     internal GameConfig.Difficulty.DifficultyEntry SampleByTimeCached(float seconds)

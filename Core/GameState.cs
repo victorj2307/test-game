@@ -21,6 +21,12 @@ public sealed class GameState
     public int ElapsedFrames { get; set; }
     public int HighScore { get; private set; }
     public int Lives { get; private set; }
+
+    /// <summary>
+    /// Maximum lives for the current run, set from <see cref="GameConfig.Scoring.StartingLives"/> in <see cref="ResetRun"/>.
+    /// Used by <see cref="Rendering.RenderSystem"/> so HUD and life-lost overlays show the correct number of heart slots.
+    /// </summary>
+    public int MaxLives { get; private set; }
     public int MaxCombo { get; private set; }
     public int PreviousBestScore { get; private set; }
     public bool IsNewBestThisRun { get; private set; }
@@ -28,9 +34,6 @@ public sealed class GameState
 
     private int _combo;
     private int _lastDestroyFrame = -1;
-    /// <summary>Transient count of destroys during the current difficulty tick window (debug/telemetry).</summary>
-    public int KillsInWindow { get; set; }
-
     public int BarSpeed { get; set; }
     public int SpawnCountdown { get; set; }
     public int SpawnIntervalFrames { get; set; }
@@ -165,7 +168,8 @@ public sealed class GameState
     public void ResetRun(int initialBarSpeed, int initialSpawnIntervalFrames)
     {
         Score = 0;
-        Lives = GameConfig.Scoring.StartingLives;
+        MaxLives = GameConfig.Scoring.StartingLives;
+        Lives = MaxLives;
         IsGameOver = false;
         IsLifeLost = false;
         IsPaused = false;
@@ -180,7 +184,6 @@ public sealed class GameState
         _combo = 0;
         _lastDestroyFrame = -1;
         MaxCombo = 0;
-        KillsInWindow = 0;
         LastFireTimeMs = 0;
         HighScore = HighScoreStore.GetBestScore(LeaderboardMaxEntries);
         PreviousBestScore = HighScore;
@@ -210,7 +213,6 @@ public sealed class GameState
     {
         SpawnCountdown = GameConfig.Spawn.InitialSpawnCountdownFrames;
         NextSpawnLaneX = null;
-        KillsInWindow = 0;
         MuzzleFlashFrames = 0;
         LifeLostFlashFrames = GameConfig.Effects.LifeLostFlashFrames;
         LastFireTimeMs = 0;
@@ -321,7 +323,6 @@ public sealed class GameState
             NewBestFlashFrames = GameConfig.Effects.NewBestFlashFrames;
         }
         if (Score > HighScore) HighScore = Score;
-        KillsInWindow++;
         ShakeUntilTickMs = Environment.TickCount64 + GameConfig.Effects.DestroyShakeMs;
     }
 
