@@ -12,6 +12,7 @@ public sealed class ExplosionFx
     /// <summary>Outer shockwave reaches this radius in world pixels when AgeT → 1.</summary>
     public float MaxWaveRadius { get; }
 
+    /// <summary>Creates a timed explosion ring effect at a world position.</summary>
     public ExplosionFx(float x, float y, int maxFrames = 48, float maxWaveRadius = 168f)
     {
         X = x;
@@ -21,8 +22,10 @@ public sealed class ExplosionFx
         MaxWaveRadius = maxWaveRadius;
     }
 
+    /// <summary>Advances the effect by one frame.</summary>
     public void Tick() => FramesLeft--;
 
+    /// <summary>True when no frames remain.</summary>
     public bool IsDead => FramesLeft <= 0;
 
     /// <summary>0 at start of life, approaches 1 as the effect ends.</summary>

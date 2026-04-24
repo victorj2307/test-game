@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Linq;
 using Game.Audio;
 using Game.Entities;
 using Game.Rendering;
@@ -9,12 +10,7 @@ namespace Game.Core;
 /// <summary>Orchestrates game flow; delegates to GameState, EntityManager, and focused systems.</summary>
 public sealed class GameManager
 {
-    public const int DamagePerHit = 20;
-    private const int InitialBarSpeed = 1;
-    private const int InitialSpawnIntervalFrames = 90;
-    private const int FireCooldownMs = 100;
-    private const int PlayerStepCooldownMs = 75;
-    private const float MultiShotSpreadDrift = 0.85f;
+    public const int LeaderboardMaxEntries = GameConfig.Persistence.LeaderboardMaxEntries;
 
     private readonly GameState _state = new();
     private readonly EntityManager _entities = new();
@@ -23,6 +19,7 @@ public sealed class GameManager
     private readonly CollisionSystem _collisions;
     private readonly SpawnSystem _spawn;
     private readonly RenderSystem _renderer = new();
+    private List<HighScoreStore.LeaderboardEntry> _leaderboard;
     private int _lastAppliedBarSpeed = -1;
     private int _lastClientWidth = 480;
     private int _lastPlayHeight = 600;
@@ -32,11 +29,13 @@ public sealed class GameManager
         _difficulty = new DifficultySystem(_state, _entities);
         _spawn = new SpawnSystem(_state, _entities, _random);
         _collisions = new CollisionSystem(_state, _entities, _random, _difficulty, _spawn);
+        _leaderboard = HighScoreStore.LoadLeaderboard(LeaderboardMaxEntries).ToList();
     }
 
     public bool ShowDebug { get; set; }
     public int DebugFps { get; set; }
 
+    /// <summary>Player entity currently active for this run.</summary>
     public Player Player { get; private set; } = null!;
 
     public bool IsPlaying => _state.IsPlaying;
@@ -48,13 +47,27 @@ public sealed class GameManager
     public int ElapsedFrames => _state.ElapsedFrames;
     public int HighScore => _state.HighScore;
     public int Lives => _state.Lives;
+    public IReadOnlyList<HighScoreStore.LeaderboardEntry> Leaderboard => _leaderboard;
 
     public int ComboMultiplier => _state.ComboMultiplier;
 
-    private static int PlayerStepPixels => SpawnSystem.BarWidth / 2;
+    /// <summary>Returns true when the current score can enter Top-N leaderboard.</summary>
+    public bool ScoreQualifiesForLeaderboard() =>
+        HighScoreStore.Qualifies(_state.Score, LeaderboardMaxEntries);
 
+    /// <summary>Persists a final score entry and refreshes in-memory leaderboard data.</summary>
+    public void SubmitLeaderboardScore(string name)
+    {
+        if (HighScoreStore.TryAddScore(name, _state.Score, LeaderboardMaxEntries))
+            _leaderboard = HighScoreStore.LoadLeaderboard(LeaderboardMaxEntries).ToList();
+    }
+
+    private static int PlayerStepPixels => GameConfig.Bars.Width / 2;
+
+    /// <summary>Toggles debug rendering overlays.</summary>
     public void ToggleDebug() => ShowDebug = !ShowDebug;
 
+    /// <summary>Toggles developer mode (debug builds only) and reapplies difficulty caps.</summary>
     public void ToggleDevMode()
     {
 #if DEBUG
@@ -88,83 +101,92 @@ public sealed class GameManager
 #endif
     }
 
+    /// <summary>Toggles pause when gameplay is in a pausable state.</summary>
     public void TogglePause()
     {
         if (!_state.IsPlaying || _state.IsGameOver || _state.IsLifeLost) return;
         _state.IsPaused = !_state.IsPaused;
     }
 
+    /// <summary>Creates player and resets per-run spawn countdown against the current viewport.</summary>
     public void Initialize(int clientWidth, int playHeight)
     {
-        int pw = 48;
-        int ph = 18;
+        int pw = GameConfig.Player.Width;
+        int ph = GameConfig.Player.Height;
         int x = (clientWidth - pw) / 2;
         Player = new Player(x, playHeight - ph, pw, ph);
         Player.SetBottom(playHeight);
         Player.ClampAndSnapToGrid(clientWidth, PlayerStepPixels);
-        _state.SpawnCountdown = 30;
+        _state.SpawnCountdown = GameConfig.Spawn.InitialSpawnCountdownFrames;
     }
 
+    /// <summary>Resets entities/state for a clean run startup.</summary>
     private void ResetState(int clientWidth, int playHeight)
     {
         _entities.Clear();
         _collisions.ClearBombKillQueue();
-        _state.ResetRun(InitialBarSpeed, InitialSpawnIntervalFrames);
+        _state.ResetRun(GameConfig.Difficulty.MinBarSpeed, GameConfig.Spawn.InitialSpawnIntervalFrames);
         _lastAppliedBarSpeed = -1;
         Initialize(clientWidth, playHeight);
     }
 
+    /// <summary>Enters non-playing attract state and refreshes leaderboard cache.</summary>
     public void EnterAttractMode(int clientWidth, int playHeight)
     {
         _state.IsPlaying = false;
+        _leaderboard = HighScoreStore.LoadLeaderboard(LeaderboardMaxEntries).ToList();
         ResetState(clientWidth, playHeight);
     }
 
+    /// <summary>Starts a new playable run.</summary>
     public void StartNewGame(int clientWidth, int playHeight)
     {
         _state.IsPlaying = true;
         ResetState(clientWidth, playHeight);
     }
 
+    /// <summary>Spawns bullet(s) based on current active power-up state.</summary>
     public void TryFire()
     {
         if (!_state.IsPlaying || _state.IsGameOver || _state.IsPaused) return;
-        const int bulletW = 4;
-        const int bulletH = 10;
+        const int bulletW = GameConfig.Player.BulletWidth;
+        const int bulletH = GameConfig.Player.BulletHeight;
         int pierce = _state.GetPierceCount();
-        int bw = pierce > 0 ? bulletW + 2 : bulletW;
-        int bh = pierce > 0 ? bulletH + 2 : bulletH;
+        int bw = pierce > 0 ? bulletW + GameConfig.Player.PiercingBulletSizeBoost : bulletW;
+        int bh = pierce > 0 ? bulletH + GameConfig.Player.PiercingBulletSizeBoost : bulletH;
         Player.GetBulletSpawn(bw, bh, out int bx, out int by);
         if (_state.IsMultiShotActive)
         {
-            _entities.Bullets.Add(new Bullet(bx - 10, by, bw, bh, 10, -MultiShotSpreadDrift, pierce));
-            _entities.Bullets.Add(new Bullet(bx, by, bw, bh, 10, 0f, pierce));
-            _entities.Bullets.Add(new Bullet(bx + 10, by, bw, bh, 10, MultiShotSpreadDrift, pierce));
+            _entities.Bullets.Add(new Bullet(bx - GameConfig.Player.MultiShotOffsetX, by, bw, bh, GameConfig.Player.BulletSpeed, -GameConfig.Player.MultiShotSpreadDrift, pierce));
+            _entities.Bullets.Add(new Bullet(bx, by, bw, bh, GameConfig.Player.BulletSpeed, 0f, pierce));
+            _entities.Bullets.Add(new Bullet(bx + GameConfig.Player.MultiShotOffsetX, by, bw, bh, GameConfig.Player.BulletSpeed, GameConfig.Player.MultiShotSpreadDrift, pierce));
         }
         else
         {
-            _entities.Bullets.Add(new Bullet(bx, by, bw, bh, 10, 0f, pierce));
+            _entities.Bullets.Add(new Bullet(bx, by, bw, bh, GameConfig.Player.BulletSpeed, 0f, pierce));
         }
-        _state.MuzzleFlashFrames = 2;
+        _state.MuzzleFlashFrames = GameConfig.Player.MuzzleFlashFrames;
         GameAudio.PlayShoot();
     }
 
+    /// <summary>Handles hold-to-fire cadence based on cooldown timers.</summary>
     private void ProcessFiring(bool wantFire)
     {
         if (!wantFire) return;
         long now = Environment.TickCount64;
-        if (now - _state.LastFireTimeMs < _state.GetFireCooldownMs(FireCooldownMs)) return;
+        if (now - _state.LastFireTimeMs < _state.GetFireCooldownMs(GameConfig.Player.FireCooldownMs)) return;
         _state.LastFireTimeMs = now;
         TryFire();
     }
 
+    /// <summary>Main simulation step for one frame.</summary>
     public void Update(int clientWidth, int playHeight, bool moveLeft, bool moveRight, bool wantFire, float deltaSeconds)
     {
         _lastClientWidth = clientWidth;
         _lastPlayHeight = playHeight;
         if (!_state.IsPlaying) return;
         if (_state.IsPaused) return;
-        if (playHeight < Player.Height + 40) return;
+        if (playHeight < Player.Height + GameConfig.Player.MinPlayHeightPadding) return;
 
         _state.AdvanceFrame(deltaSeconds);
         if (_state.IsLifeLost) return;
@@ -174,12 +196,13 @@ public sealed class GameManager
         {
             long stepNow = Environment.TickCount64;
             int step = PlayerStepPixels;
-            if (moveLeft && !moveRight && stepNow - _state.LastPlayerStepLeftMs >= PlayerStepCooldownMs)
+            int stepCooldownMs = _state.GetPlayerStepCooldownMs(GameConfig.Player.StepCooldownMs);
+            if (moveLeft && !moveRight && stepNow - _state.LastPlayerStepLeftMs >= stepCooldownMs)
             {
                 Player.TryStep(-1, clientWidth, step);
                 _state.LastPlayerStepLeftMs = stepNow;
             }
-            else if (moveRight && !moveLeft && stepNow - _state.LastPlayerStepRightMs >= PlayerStepCooldownMs)
+            else if (moveRight && !moveLeft && stepNow - _state.LastPlayerStepRightMs >= stepCooldownMs)
             {
                 Player.TryStep(1, clientWidth, step);
                 _state.LastPlayerStepRightMs = stepNow;
@@ -188,6 +211,7 @@ public sealed class GameManager
 
             _entities.UpdateBullets();
             _entities.UpdateParticles();
+            _entities.UpdateFragments();
             _entities.UpdatePowerUps(playHeight);
             CollectPowerUps(clientWidth, playHeight);
             if (_state.TickBombFuse())
@@ -197,7 +221,7 @@ public sealed class GameManager
 
             foreach (var b in _entities.Bars.ToList())
             {
-                if (b.Y + b.Height >= playHeight)
+                if (b.GetBounds().Bottom >= playHeight)
                 {
                     if (_state.TryConsumeShield())
                     {
@@ -207,7 +231,7 @@ public sealed class GameManager
                     if (_state.IsDevMode)
                     {
                         _entities.Bars.Remove(b);
-                        _state.ShakeUntilTickMs = Environment.TickCount64 + 80;
+                        _state.ShakeUntilTickMs = Environment.TickCount64 + GameConfig.Effects.FloorHitDevShakeMs;
                         continue;
                     }
                     bool depleted = _state.LoseLife();
@@ -224,7 +248,7 @@ public sealed class GameManager
                 }
             }
 
-            _collisions.Resolve(DamagePerHit);
+            _collisions.Resolve(GameConfig.Scoring.DamagePerHit);
             _entities.UpdateExplosions();
             _collisions.TickPendingBombKills();
             if (!_state.IsGameOver) _spawn.TrySpawn(clientWidth);
@@ -233,17 +257,20 @@ public sealed class GameManager
         _difficulty.Tick();
     }
 
+    /// <summary>Applies life-lost transition effects and temporary pacing relief.</summary>
     private void HandleLifeLost()
     {
+        GameAudio.PlayLifeLost();
         _entities.Clear();
         _collisions.ClearBombKillQueue();
         _state.ResetAfterLifeLost();
         _lastAppliedBarSpeed = -1;
         _state.IsLifeLost = true;
-        _state.ShakeUntilTickMs = Environment.TickCount64 + 180;
-        _state.SpawnIntervalFrames = Math.Min(InitialSpawnIntervalFrames, _state.SpawnIntervalFrames + 6);
+        _state.ShakeUntilTickMs = Environment.TickCount64 + GameConfig.Effects.LifeLostShakeMs;
+        _state.SpawnIntervalFrames = Math.Min(GameConfig.Spawn.InitialSpawnIntervalFrames, _state.SpawnIntervalFrames + GameConfig.Effects.SpawnRelaxAfterLifeLostFrames);
     }
 
+    /// <summary>Updates active bars with latest effective global speed target.</summary>
     private void SyncBarSpeedTargetForActiveEffects(bool force)
     {
         int effective = _state.GetEffectiveBarSpeed();
@@ -252,6 +279,7 @@ public sealed class GameManager
         foreach (var bar in _entities.Bars) bar.SetTargetMoveSpeed(effective);
     }
 
+    /// <summary>Collects intersecting power-ups and activates their effects.</summary>
     private void CollectPowerUps(int clientWidth, int playHeight)
     {
         Rectangle playerBounds = Player.GetBounds();
@@ -263,6 +291,7 @@ public sealed class GameManager
         }
     }
 
+    /// <summary>Applies one collected power-up effect.</summary>
     private void ActivateCollectedPowerUp(PowerUpType type, int clientWidth, int playHeight)
     {
         if (type == PowerUpType.BombShot)
@@ -279,6 +308,7 @@ public sealed class GameManager
         SyncBarSpeedTargetForActiveEffects(force: true);
     }
 
+    /// <summary>Resumes gameplay after life-lost pause.</summary>
     public void ContinueAfterLifeLost(int clientWidth, int playHeight)
     {
         if (!_state.IsLifeLost || _state.IsGameOver) return;
@@ -287,14 +317,16 @@ public sealed class GameManager
         Player.ClampAndSnapToGrid(clientWidth, PlayerStepPixels);
     }
 
+    /// <summary>Reclamps player position after viewport changes.</summary>
     public void OnClientResize(int clientWidth, int playHeight)
     {
         Player.SetBottom(playHeight);
         Player.ClampAndSnapToGrid(clientWidth, PlayerStepPixels);
     }
 
+    /// <summary>Delegates full-frame rendering to <see cref="RenderSystem"/>.</summary>
     public void Draw(Graphics g, int clientWidth, int playHeight, Font uiFont)
     {
-        _renderer.Draw(g, clientWidth, playHeight, uiFont, _state, _entities, Player, ShowDebug, DebugFps);
+        _renderer.Draw(g, clientWidth, playHeight, uiFont, _state, _entities, Player, _leaderboard, ShowDebug, DebugFps);
     }
 }

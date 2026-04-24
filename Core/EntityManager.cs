@@ -8,18 +8,22 @@ public sealed class EntityManager
     public List<Bar> Bars { get; } = new();
     public List<Bullet> Bullets { get; } = new();
     public List<Particle> Particles { get; } = new();
+    public List<Fragment> Fragments { get; } = new();
     public List<PowerUp> PowerUps { get; } = new();
     public List<ExplosionFx> Explosions { get; } = new();
 
+    /// <summary>Clears all active world entities.</summary>
     public void Clear()
     {
         Bars.Clear();
         Bullets.Clear();
         Particles.Clear();
+        Fragments.Clear();
         PowerUps.Clear();
         Explosions.Clear();
     }
 
+    /// <summary>Updates bullets and removes ones that leave the top of the playfield.</summary>
     public void UpdateBullets()
     {
         for (int i = Bullets.Count - 1; i >= 0; i--)
@@ -29,15 +33,17 @@ public sealed class EntityManager
         }
     }
 
+    /// <summary>Updates falling power-ups and culls off-screen entries.</summary>
     public void UpdatePowerUps(int playHeight)
     {
         for (int i = PowerUps.Count - 1; i >= 0; i--)
         {
             PowerUps[i].Update();
-            if (PowerUps[i].Y > playHeight + 20) PowerUps.RemoveAt(i);
+            if (PowerUps[i].Y > playHeight + GameConfig.PowerUps.OffscreenCullPadding) PowerUps.RemoveAt(i);
         }
     }
 
+    /// <summary>Advances and cleans up simple spark particles.</summary>
     public void UpdateParticles()
     {
         for (int i = Particles.Count - 1; i >= 0; i--)
@@ -47,6 +53,17 @@ public sealed class EntityManager
         }
     }
 
+    /// <summary>Advances and cleans up rectangular debris fragments.</summary>
+    public void UpdateFragments()
+    {
+        for (int i = Fragments.Count - 1; i >= 0; i--)
+        {
+            Fragments[i].Update();
+            if (Fragments[i].IsDead) Fragments.RemoveAt(i);
+        }
+    }
+
+    /// <summary>Ticks active explosion ring effects and removes finished ones.</summary>
     public void UpdateExplosions()
     {
         for (int i = Explosions.Count - 1; i >= 0; i--)
@@ -56,6 +73,7 @@ public sealed class EntityManager
         }
     }
 
+    /// <summary>Advances all bars (speed easing, movement, and hit effects).</summary>
     public void UpdateBars()
     {
         foreach (var b in Bars)

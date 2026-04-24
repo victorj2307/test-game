@@ -30,6 +30,9 @@ public sealed class RenderSystem
         -1.8f, 2.1f, 1.5f, -2.3f, 1.2f, 2f, -2f, 0.8f, -1.4f, 2.2f
     };
 
+    /// <summary>
+    /// Draws a full gameplay frame including world entities, effects, HUD, overlays, and debug visuals.
+    /// </summary>
     public void Draw(
         Graphics g,
         int clientWidth,
@@ -38,6 +41,7 @@ public sealed class RenderSystem
         GameState state,
         EntityManager entities,
         Player player,
+        IReadOnlyList<HighScoreStore.LeaderboardEntry> leaderboard,
         bool showDebug,
         int debugFps)
     {
@@ -73,7 +77,7 @@ public sealed class RenderSystem
         bool barPastDanger = false;
         foreach (var bar in entities.Bars)
         {
-            if (bar.Height > 0 && bar.Y + bar.Height >= dangerY) { barPastDanger = true; break; }
+            if (bar.GetBounds().Bottom >= dangerY) { barPastDanger = true; break; }
         }
         using (var dangerPen = new Pen(barPastDanger ? Color.FromArgb(180, 255, 120, 60) : Color.FromArgb(70, 80, 110, 130), barPastDanger ? 2f : 1f))
         {
@@ -85,8 +89,19 @@ public sealed class RenderSystem
         {
             if (bar.Height <= 0) continue;
             var r = bar.GetBounds();
+            if (r.Height <= 0) continue;
+            if (bar.HitPulseFrames > 0)
+            {
+                int pulsePad = bar.PierceFlash ? 2 : 1;
+                r = Rectangle.Inflate(r, pulsePad, pulsePad);
+            }
             using (var br = new SolidBrush(GetBarDrawColor(bar)))
                 g.FillRectangle(br, r);
+            if (bar.IsSpecial)
+            {
+                using var specialGlow = new Pen(GetSpecialOutlineColor(state.ElapsedFrames), 1.6f);
+                g.DrawRectangle(specialGlow, r.X - 1, r.Y - 1, r.Width + 1, r.Height + 1);
+            }
             g.DrawRectangle(barOutline, r.X, r.Y, r.Width - 1, r.Height - 1);
         }
 
@@ -95,6 +110,7 @@ public sealed class RenderSystem
             using var br = new SolidBrush(p.Color);
             g.FillRectangle(br, p.X, p.Y, 2, 2);
         }
+        DrawFragments(g, entities.Fragments);
 
         DrawPowerUps(g, entities.PowerUps);
 
@@ -152,76 +168,89 @@ public sealed class RenderSystem
 
         DrawShieldPlayerFx(g, player, state);
 
-        DrawHud(g, uiFont, clientWidth, state);
-        DrawNewBestBanner(g, uiFont, clientWidth, state);
-        if (state.IsDevMode && state.IsPlaying && !state.IsGameOver)
-            DrawDevModeOverlay(g, uiFont, clientWidth, playHeight, state);
-
-        DrawBombScreenFlash(g, clientWidth, playHeight, state);
-
-        if (state.LifeLostFlashFrames > 0)
-        {
-            int flashAlpha = Math.Min(170, state.LifeLostFlashFrames * 9);
-            using var flashOverlay = new SolidBrush(Color.FromArgb(flashAlpha, 210, 30, 40));
-            g.FillRectangle(flashOverlay, 0, 0, clientWidth, playHeight);
-        }
-
-        if (state.IsGameOver)
+        if (state.ShowLeaderboard)
         {
             using (var overlay = new SolidBrush(Color.FromArgb(220, 0, 0, 0)))
                 g.FillRectangle(overlay, 0, 0, clientWidth, playHeight);
-            using var goFont = new Font(uiFont.FontFamily, uiFont.Size + 20, FontStyle.Bold, GraphicsUnit.Point);
-            float cy = playHeight * 0.28f;
-            DrawCenteredText(g, "GAME OVER", goFont, GoBrush, clientWidth, cy);
-            using var statFont = new Font(uiFont.FontFamily, uiFont.Size + 2f, FontStyle.Bold, GraphicsUnit.Point);
-            using var statBrush = new SolidBrush(Color.FromArgb(225, 238, 245));
-            DrawCenteredText(g, $"Final Score: {state.Score}", statFont, statBrush, clientWidth, cy + 64f);
-            DrawCenteredText(g, $"Best Score:  {state.HighScore}", statFont, statBrush, clientWidth, cy + 96f);
-            DrawCenteredText(g, $"Max Combo:  x{Math.Max(1, state.MaxCombo)}", statFont, statBrush, clientWidth, cy + 128f);
+            float statsBottom = DrawFinalResultsPanel(g, uiFont, state, clientWidth, playHeight);
+            float gameOverBottom = DrawGameOverTitle(g, uiFont, clientWidth, statsBottom + 10f);
+            float leaderboardBottom = DrawLeaderboard(g, uiFont, leaderboard, clientWidth, playHeight, state.Score, gameOverBottom + 14f);
             const string hint = "Click Start to play again";
             using var hintBr = new SolidBrush(Color.FromArgb(220, 220, 225));
-            DrawCenteredText(g, hint, uiFont, hintBr, clientWidth, cy + 168f);
+            DrawCenteredText(g, hint, uiFont, hintBr, clientWidth, leaderboardBottom + 14f);
         }
-        else if (state.IsLifeLost)
+        else
         {
-            using (var overlay = new SolidBrush(Color.FromArgb(165, 0, 0, 0)))
+            DrawHud(g, uiFont, clientWidth, state);
+            DrawNewBestBanner(g, uiFont, clientWidth, state);
+            if (state.IsDevMode && state.IsPlaying && !state.IsGameOver)
+                DrawDevModeOverlay(g, uiFont, clientWidth, playHeight, state);
+
+            DrawBombScreenFlash(g, clientWidth, playHeight, state);
+
+            if (state.LifeLostFlashFrames > 0)
+            {
+                int flashAlpha = Math.Min(170, state.LifeLostFlashFrames * 9);
+                using var flashOverlay = new SolidBrush(Color.FromArgb(flashAlpha, 210, 30, 40));
+                g.FillRectangle(flashOverlay, 0, 0, clientWidth, playHeight);
+            }
+
+            if (state.IsGameOver)
+            {
+                using (var overlay = new SolidBrush(Color.FromArgb(220, 0, 0, 0)))
+                    g.FillRectangle(overlay, 0, 0, clientWidth, playHeight);
+                using var goFont = new Font(uiFont.FontFamily, uiFont.Size + 20, FontStyle.Bold, GraphicsUnit.Point);
+                float cy = playHeight * 0.28f;
+                DrawCenteredText(g, "GAME OVER", goFont, GoBrush, clientWidth, cy);
+                using var statFont = new Font(uiFont.FontFamily, uiFont.Size + 2f, FontStyle.Bold, GraphicsUnit.Point);
+                using var statBrush = new SolidBrush(Color.FromArgb(225, 238, 245));
+                DrawCenteredText(g, $"Final Score: {state.Score}", statFont, statBrush, clientWidth, cy + 64f);
+                DrawCenteredText(g, $"Best Score:  {state.HighScore}", statFont, statBrush, clientWidth, cy + 96f);
+                DrawCenteredText(g, $"Max Combo:  x{Math.Max(1, state.MaxCombo)}", statFont, statBrush, clientWidth, cy + 128f);
+                const string hint = "Click Start to play again";
+                using var hintBr = new SolidBrush(Color.FromArgb(220, 220, 225));
+                DrawCenteredText(g, hint, uiFont, hintBr, clientWidth, cy + 176f);
+            }
+            else if (state.IsLifeLost)
+            {
+                using (var overlay = new SolidBrush(Color.FromArgb(165, 0, 0, 0)))
+                    g.FillRectangle(overlay, 0, 0, clientWidth, playHeight);
+                using var lifeLostFont = new Font(uiFont.FontFamily, uiFont.Size + 10, FontStyle.Bold, GraphicsUnit.Point);
+                const string msg = "LIFE LOST";
+                SizeF sz = g.MeasureString(msg, lifeLostFont);
+                float cx = (clientWidth - sz.Width) * 0.5f;
+                float cy = playHeight * 0.34f;
+                g.DrawString(msg, lifeLostFont, TextBrush, cx, cy);
+
+                DrawLifeIcons(g, 0.5f * (clientWidth - (3 * 18 + 2 * 8)), cy + sz.Height + 14, 3, 16, state.Lives);
+
+                const string hint = "Press Enter/Space or click Continue";
+                using var hintBr = new SolidBrush(Color.FromArgb(220, 220, 225));
+                float hintW = g.MeasureString(hint, uiFont).Width;
+                g.DrawString(hint, uiFont, hintBr, (clientWidth - hintW) * 0.5f, cy + sz.Height + 44f);
+            }
+            else if (state.IsPaused)
+            {
+                using var overlay = new SolidBrush(Color.FromArgb(170, 0, 0, 0));
                 g.FillRectangle(overlay, 0, 0, clientWidth, playHeight);
-            using var lifeLostFont = new Font(uiFont.FontFamily, uiFont.Size + 10, FontStyle.Bold, GraphicsUnit.Point);
-            const string msg = "LIFE LOST";
-            SizeF sz = g.MeasureString(msg, lifeLostFont);
-            float cx = (clientWidth - sz.Width) * 0.5f;
-            float cy = playHeight * 0.34f;
-            g.DrawString(msg, lifeLostFont, TextBrush, cx, cy);
-
-            DrawLifeIcons(g, 0.5f * (clientWidth - (3 * 18 + 2 * 8)), cy + sz.Height + 14, 3, 16, state.Lives);
-
-            const string hint = "Press Enter/Space or click Continue";
-            using var hintBr = new SolidBrush(Color.FromArgb(220, 220, 225));
-            float hintW = g.MeasureString(hint, uiFont).Width;
-            g.DrawString(hint, uiFont, hintBr, (clientWidth - hintW) * 0.5f, cy + sz.Height + 44f);
+                using var pausedFont = new Font(uiFont.FontFamily, uiFont.Size + 18f, FontStyle.Bold, GraphicsUnit.Point);
+                using var hintFont = new Font(uiFont.FontFamily, uiFont.Size + 1f, FontStyle.Regular, GraphicsUnit.Point);
+                using var hintBr = new SolidBrush(Color.FromArgb(220, 220, 225));
+                float cy = playHeight * 0.34f;
+                DrawCenteredText(g, "PAUSED", pausedFont, TextBrush, clientWidth, cy);
+                DrawCenteredText(g, "Press ESC to continue", hintFont, hintBr, clientWidth, cy + 56f);
+            }
+            else if (!state.IsPlaying)
+            {
+                using var title = new Font(uiFont.FontFamily, 22, FontStyle.Bold, GraphicsUnit.Point);
+                const string t = "READY?";
+                SizeF tsz = g.MeasureString(t, title);
+                g.DrawString(t, title, TextBrush, (clientWidth - tsz.Width) * 0.5f, playHeight * 0.38f);
+                const string s = "Click the Start button";
+                g.DrawString(s, uiFont, SubtleTextBrush, (clientWidth - g.MeasureString(s, uiFont).Width) * 0.5f, playHeight * 0.38f + tsz.Height + 8f);
+            }
         }
-        else if (state.IsPaused)
-        {
-            using var overlay = new SolidBrush(Color.FromArgb(170, 0, 0, 0));
-            g.FillRectangle(overlay, 0, 0, clientWidth, playHeight);
-            using var pausedFont = new Font(uiFont.FontFamily, uiFont.Size + 18f, FontStyle.Bold, GraphicsUnit.Point);
-            using var hintFont = new Font(uiFont.FontFamily, uiFont.Size + 1f, FontStyle.Regular, GraphicsUnit.Point);
-            using var hintBr = new SolidBrush(Color.FromArgb(220, 220, 225));
-            float cy = playHeight * 0.34f;
-            DrawCenteredText(g, "PAUSED", pausedFont, TextBrush, clientWidth, cy);
-            DrawCenteredText(g, "Press ESC to continue", hintFont, hintBr, clientWidth, cy + 56f);
-        }
-        else if (!state.IsPlaying)
-        {
-            using var title = new Font(uiFont.FontFamily, 22, FontStyle.Bold, GraphicsUnit.Point);
-            const string t = "READY?";
-            SizeF tsz = g.MeasureString(t, title);
-            g.DrawString(t, title, TextBrush, (clientWidth - tsz.Width) * 0.5f, playHeight * 0.38f);
-            const string s = "Click the Start button";
-            g.DrawString(s, uiFont, SubtleTextBrush, (clientWidth - g.MeasureString(s, uiFont).Width) * 0.5f, playHeight * 0.38f + tsz.Height + 8f);
-        }
-
-        if (showDebug)
+        if (showDebug && !state.ShowLeaderboard)
         {
             using var dbgFont = new Font(uiFont.FontFamily, 7.5f, FontStyle.Regular, GraphicsUnit.Point);
             using var dbgBr = new SolidBrush(Color.FromArgb(130, 160, 170, 190));
@@ -686,6 +715,205 @@ public sealed class RenderSystem
         g.DrawString(text, font, brush, (clientWidth - sz.Width) * 0.5f, y);
     }
 
+    private static float DrawFinalResultsPanel(
+        Graphics g,
+        Font uiFont,
+        GameState state,
+        int clientWidth,
+        int playHeight)
+    {
+        float panelW = Math.Min(380f, clientWidth - 44f);
+        float panelH = 128f;
+        float panelX = (clientWidth - panelW) * 0.5f;
+        float panelY = Math.Max(24f, playHeight * 0.08f);
+        DrawPanelFrame(g, panelX, panelY, panelW, panelH);
+
+        using var titleFont = new Font(uiFont.FontFamily, uiFont.Size + 3f, FontStyle.Bold, GraphicsUnit.Point);
+        using var titleBr = new SolidBrush(Color.FromArgb(245, 230, 245, 255));
+        DrawCenteredText(g, "FINAL RESULTS", titleFont, titleBr, clientWidth, panelY + 10f);
+        using var separatorPen = new Pen(Color.FromArgb(170, 95, 205, 255), 1f);
+        g.DrawLine(separatorPen, panelX + 14f, panelY + 38f, panelX + panelW - 14f, panelY + 38f);
+
+        float labelX = panelX + 18f;
+        float valueRightX = panelX + panelW - 18f;
+        float rowY = panelY + 48f;
+        float rowStep = 24f;
+        DrawStatRow(g, uiFont, "Score", state.Score.ToString(), labelX, valueRightX, rowY, state.IsNewBestThisRun);
+        DrawStatRow(g, uiFont, "Best Score", state.HighScore.ToString(), labelX, valueRightX, rowY + rowStep, false);
+        DrawStatRow(g, uiFont, "Max Combo", $"x{Math.Max(1, state.MaxCombo)}", labelX, valueRightX, rowY + rowStep * 2f, false);
+        return panelY + panelH;
+    }
+
+    private static float DrawGameOverTitle(Graphics g, Font uiFont, int clientWidth, float startY)
+    {
+        using var titleFont = new Font(uiFont.FontFamily, uiFont.Size + 16f, FontStyle.Bold, GraphicsUnit.Point);
+        const string title = "GAME OVER";
+        SizeF titleSize = g.MeasureString(title, titleFont);
+        float y = startY;
+        float x = (clientWidth - titleSize.Width) * 0.5f;
+
+        using var glowBr = new SolidBrush(Color.FromArgb(80, 255, 110, 70));
+        g.DrawString(title, titleFont, glowBr, x - 2f, y);
+        g.DrawString(title, titleFont, glowBr, x + 2f, y);
+        g.DrawString(title, titleFont, glowBr, x, y - 2f);
+        g.DrawString(title, titleFont, glowBr, x, y + 2f);
+
+        using var coreBr = new SolidBrush(Color.FromArgb(255, 255, 135, 80));
+        g.DrawString(title, titleFont, coreBr, x, y);
+
+        float lineY = y + titleSize.Height * 0.55f;
+        float margin = 18f;
+        float gap = 14f;
+        float leftStart = margin;
+        float leftEnd = x - gap;
+        float rightStart = x + titleSize.Width + gap;
+        float rightEnd = clientWidth - margin;
+        using var linePen = new Pen(Color.FromArgb(140, 255, 120, 80), 1.4f);
+        if (leftEnd - leftStart > 10f) g.DrawLine(linePen, leftStart, lineY, leftEnd, lineY);
+        if (rightEnd - rightStart > 10f) g.DrawLine(linePen, rightStart, lineY, rightEnd, lineY);
+
+        return y + titleSize.Height + 8f;
+    }
+
+    private static float DrawLeaderboard(
+        Graphics g,
+        Font uiFont,
+        IReadOnlyList<HighScoreStore.LeaderboardEntry> leaderboard,
+        int clientWidth,
+        int playHeight,
+        int currentScore,
+        float minTopY)
+    {
+        const float reservedBottom = 96f; // Keep clear of the Play again button area.
+        float maxBottomY = playHeight - reservedBottom;
+        float panelW = Math.Min(380f, clientWidth - 44f);
+        float rowH = 22f;
+        float availableHeight = Math.Max(120f, maxBottomY - minTopY);
+        int maxRowsByHeight = Math.Max(1, (int)MathF.Floor((availableHeight - 86f) / rowH));
+        int rows = Math.Min(Math.Min(leaderboard.Count, 10), maxRowsByHeight);
+        float panelH = 70f + Math.Max(1, rows) * rowH + 16f;
+        float panelX = (clientWidth - panelW) * 0.5f;
+        float centeredY = (playHeight - panelH) * 0.5f + 28f;
+        float panelY = Math.Max(minTopY, centeredY);
+        panelY = Math.Min(panelY, maxBottomY - panelH);
+        DrawPanelFrame(g, panelX, panelY, panelW, panelH);
+
+        using var titleFont = new Font(uiFont.FontFamily, uiFont.Size + 4f, FontStyle.Bold, GraphicsUnit.Point);
+        using var titleBr = new SolidBrush(Color.FromArgb(245, 230, 245, 255));
+        DrawCenteredText(g, "LEADERBOARD", titleFont, titleBr, clientWidth, panelY + 12f);
+        using var separatorPen = new Pen(Color.FromArgb(170, 95, 205, 255), 1f);
+        g.DrawLine(separatorPen, panelX + 14f, panelY + 42f, panelX + panelW - 14f, panelY + 42f);
+
+        float rankNameX = panelX + 18f;
+        float scoreRightX = panelX + panelW - 18f;
+        float rowsY = panelY + 50f;
+
+        using var headerFont = new Font(uiFont.FontFamily, uiFont.Size - 0.5f, FontStyle.Bold, GraphicsUnit.Point);
+        using var headerBr = new SolidBrush(Color.FromArgb(205, 200, 220, 238));
+        g.DrawString("RANK  NAME", headerFont, headerBr, rankNameX, rowsY);
+        string scoreHdr = "SCORE";
+        float scoreHdrW = g.MeasureString(scoreHdr, headerFont).Width;
+        g.DrawString(scoreHdr, headerFont, headerBr, scoreRightX - scoreHdrW, rowsY);
+
+        if (leaderboard.Count == 0)
+        {
+            using var emptyBr = new SolidBrush(Color.FromArgb(225, 225, 232, 242));
+            DrawCenteredText(g, "No scores yet", uiFont, emptyBr, clientWidth, rowsY + 26f);
+            return panelY + panelH;
+        }
+
+        bool highlightedCurrent = false;
+        float y = rowsY + 22f;
+        for (int i = 0; i < rows; i++)
+        {
+            var entry = leaderboard[i];
+            bool isCurrent = !highlightedCurrent && entry.Score == currentScore && currentScore > 0;
+            if (isCurrent) highlightedCurrent = true;
+            bool isTop = i == 0;
+
+            if (isCurrent)
+            {
+                using var rowHighlight = new SolidBrush(Color.FromArgb(80, 70, 190, 255));
+                g.FillRectangle(rowHighlight, panelX + 10f, y - 1f, panelW - 20f, rowH - 2f);
+            }
+
+            string rankAndName = $"{i + 1,2}. {TrimName(entry.Name, 14)}";
+            string scoreText = entry.Score.ToString();
+
+            using var rowFont = new Font(
+                uiFont.FontFamily,
+                uiFont.Size,
+                isCurrent || isTop ? FontStyle.Bold : FontStyle.Regular,
+                GraphicsUnit.Point);
+            using var rowBrush = new SolidBrush(
+                isCurrent
+                    ? Color.FromArgb(255, 175, 245, 255)
+                    : isTop
+                        ? Color.FromArgb(255, 255, 225, 120)
+                        : Color.FromArgb(235, 235, 242, 250));
+
+            g.DrawString(rankAndName, rowFont, rowBrush, rankNameX, y);
+            float scoreWidth = g.MeasureString(scoreText, rowFont).Width;
+            g.DrawString(scoreText, rowFont, rowBrush, scoreRightX - scoreWidth, y);
+            y += rowH;
+        }
+
+        return panelY + panelH;
+    }
+
+    private static void DrawPanelFrame(Graphics g, float x, float y, float width, float height)
+    {
+        using var panelBr = new SolidBrush(Color.FromArgb(170, 8, 16, 34));
+        g.FillRectangle(panelBr, x, y, width, height);
+        using var glowPen = new Pen(Color.FromArgb(90, 100, 230, 255), 5f);
+        g.DrawRectangle(glowPen, x - 1f, y - 1f, width + 2f, height + 2f);
+        using var borderPen = new Pen(Color.FromArgb(220, 120, 245, 255), 1.6f);
+        g.DrawRectangle(borderPen, x, y, width, height);
+    }
+
+    private static void DrawStatRow(
+        Graphics g,
+        Font uiFont,
+        string label,
+        string value,
+        float labelX,
+        float valueRightX,
+        float y,
+        bool isHighlight)
+    {
+        using var rowFont = new Font(uiFont.FontFamily, uiFont.Size + 0.5f, isHighlight ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Point);
+        using var labelBr = new SolidBrush(Color.FromArgb(215, 210, 224, 240));
+        using var valueBr = new SolidBrush(isHighlight ? Color.FromArgb(255, 255, 225, 120) : Color.FromArgb(240, 235, 242, 250));
+        g.DrawString(label, rowFont, labelBr, labelX, y);
+        float valueWidth = g.MeasureString(value, rowFont).Width;
+        g.DrawString(value, rowFont, valueBr, valueRightX - valueWidth, y);
+        if (isHighlight)
+        {
+            const string newBest = "NEW BEST";
+            using var tagFont = new Font(uiFont.FontFamily, uiFont.Size - 1f, FontStyle.Bold, GraphicsUnit.Point);
+            using var tagBr = new SolidBrush(Color.FromArgb(255, 255, 210, 95));
+            g.DrawString(newBest, tagFont, tagBr, labelX + 170f, y + 1f);
+        }
+    }
+
+    private static string TrimName(string name, int maxChars)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "PLAYER";
+        string trimmed = name.Trim();
+        if (trimmed.Length <= maxChars) return trimmed;
+        return trimmed[..Math.Max(1, maxChars - 3)] + "...";
+    }
+
+    private static void DrawFragments(Graphics g, IReadOnlyList<Fragment> fragments)
+    {
+        foreach (var f in fragments)
+        {
+            int alpha = Math.Clamp((int)(f.BaseColor.A * f.LifeT), 18, 255);
+            using var br = new SolidBrush(Color.FromArgb(alpha, f.BaseColor.R, f.BaseColor.G, f.BaseColor.B));
+            g.FillRectangle(br, f.X, f.Y, f.Width, f.Height);
+        }
+    }
+
     private static void DrawBackground(Graphics g, int w, int h)
     {
         DrawSynthwaveGradient(g, w, h);
@@ -771,7 +999,7 @@ public sealed class RenderSystem
     /// <summary>Thin neon-style grid; low alpha so bars and player stay readable.</summary>
     private static void DrawSynthwaveGrid(Graphics g, int w, int h)
     {
-        const int step = 40;
+        const int step = GameConfig.Visual.BombGridStep;
         using var vPen = new Pen(Color.FromArgb(36, 190, 95, 255), 0.65f);
         using var hPen = new Pen(Color.FromArgb(32, 255, 70, 210), 0.65f);
         for (int x = 0; x < w; x += step)
@@ -787,8 +1015,25 @@ public sealed class RenderSystem
                 ? Color.FromArgb(255, 248, 140, 255)
                 : Color.FromArgb(255, 220, 200);
         float t = bar.HealthRatio;
-        if (t > 0.5f) return Lerp3(Color.LimeGreen, Color.Gold, 2f * (1f - t));
-        return Lerp3(Color.Gold, Color.Firebrick, 1f - 2f * t);
+        Color baseColor = t > 0.5f
+            ? Lerp3(Color.LimeGreen, Color.Gold, 2f * (1f - t))
+            : Lerp3(Color.Gold, Color.Firebrick, 1f - 2f * t);
+        if (!bar.IsSpecial) return baseColor;
+
+        float pulse = 0.5f + 0.5f * MathF.Sin(Environment.TickCount64 * GameConfig.Visual.SpecialBarPulseRate + bar.X * GameConfig.Visual.SpecialBarPulsePhaseByX);
+        Color neonBase = Lerp3(Color.FromArgb(255, 140, 70, 255), Color.FromArgb(255, 215, 120, 255), 1f - t);
+        Color mixed = Lerp3(baseColor, neonBase, GameConfig.Visual.SpecialBarNeonMix);
+        float brightness = GameConfig.Visual.SpecialBarBrightnessBase + GameConfig.Visual.SpecialBarBrightnessRange * pulse;
+        return Lerp3(mixed, Color.FromArgb(255, 245, 215, 255), brightness);
+    }
+
+    private static Color GetSpecialOutlineColor(int elapsedFrames)
+    {
+        float pulse = 0.5f + 0.5f * MathF.Sin(elapsedFrames * GameConfig.Visual.SpecialOutlinePulseRate);
+        int alpha = GameConfig.Visual.SpecialOutlineAlphaBase + (int)(GameConfig.Visual.SpecialOutlineAlphaRange * pulse);
+        int green = GameConfig.Visual.SpecialOutlineGreenBase + (int)(GameConfig.Visual.SpecialOutlineGreenRange * pulse);
+        int blue = GameConfig.Visual.SpecialOutlineBlueBase + (int)(GameConfig.Visual.SpecialOutlineBlueRange * pulse);
+        return Color.FromArgb(alpha, 210, green, blue);
     }
 
     private static Color Lerp3(Color from, Color to, float u)

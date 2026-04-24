@@ -25,6 +25,9 @@ public static class SoundGenerator
             Players[i] = new SoundPlayer();
     }
 
+    /// <summary>
+    /// Generates and plays a short sine-wave tone with slight randomized pitch jitter.
+    /// </summary>
     public static void PlayTone(int frequencyHz, int durationMs)
     {
         int jitter = Random.Shared.Next(-95, 96);
@@ -64,14 +67,21 @@ public static class SoundGenerator
         }
     }
 
+    /// <summary>Fires a short bright tone for player shots.</summary>
     public static void PlayShootSound() =>
         PlayTone(Random.Shared.Next(1000, 1401), Random.Shared.Next(45, 61));
 
+    /// <summary>Fires a short medium tone for standard impacts.</summary>
     public static void PlayHitSound() =>
         PlayTone(Random.Shared.Next(600, 901), Random.Shared.Next(65, 101));
 
+    /// <summary>Fires a longer low tone for game over.</summary>
     public static void PlayGameOverSound() =>
         PlayTone(Random.Shared.Next(150, 301), Random.Shared.Next(220, 401));
+
+    /// <summary>Distinct short-low cue for losing one life (non-terminal).</summary>
+    public static void PlayLifeLostSound() =>
+        PlayTone(Random.Shared.Next(280, 421), Random.Shared.Next(140, 201));
 
     /// <summary>Rising “power up” chirp for shield pickup.</summary>
     public static void PlayShieldPickupSound()
@@ -88,6 +98,9 @@ public static class SoundGenerator
     public static void PlayPierceHitSound() =>
         PlayTone(Random.Shared.Next(1250, 1651), Random.Shared.Next(38, 58));
 
+    /// <summary>
+    /// Builds a complete mono PCM WAV stream for the requested sine tone.
+    /// </summary>
     private static MemoryStream BuildWavSine(int frequencyHz, int durationMs)
     {
         int sampleCount = SampleRate * durationMs / 1000;
@@ -129,6 +142,9 @@ public static class SoundGenerator
         return ms;
     }
 
+    /// <summary>
+    /// Smooth attack/release envelope to reduce clicks at waveform start/end.
+    /// </summary>
     private static double CosineEnvelope(int i, int n)
     {
         int attack = Math.Max(4, n / 10);

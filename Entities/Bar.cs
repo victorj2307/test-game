@@ -1,4 +1,5 @@
 using System.Drawing;
+using Game.Core;
 
 namespace Game.Entities;
 
@@ -15,8 +16,10 @@ public sealed class Bar
     public int Speed => Math.Max(1, (int)MathF.Round(_currentSpeed));
 
     public BarType Type { get; }
+    public bool IsSpecial { get; }
     public int InitialHeight { get; }
     public int HitFlashTimer { get; private set; }
+    public int HitPulseFrames { get; private set; }
 
     /// <summary>When true, hit flash uses magenta tint (piercing shot).</summary>
     public bool PierceFlash { get; private set; }
@@ -25,15 +28,14 @@ public sealed class Bar
     private float _currentSpeed;
     private float _targetSpeed;
 
-    private const float SpeedLerpFactor = 0.14f;
-
-    public Bar(int x, int y, int width, int height, BarType type, int initialHeight, float speedScale, int globalBarSpeed)
+    public Bar(int x, int y, int width, int height, BarType type, bool isSpecial, int initialHeight, float speedScale, int globalBarSpeed)
     {
         X = x;
         Y = y;
         Width = width;
         Height = height;
         Type = type;
+        IsSpecial = isSpecial;
         InitialHeight = initialHeight;
         _speedScale = speedScale;
         SetMoveSpeed(globalBarSpeed);
@@ -55,10 +57,10 @@ public sealed class Bar
     public void TickSpeedTowardTarget()
     {
         float d = _targetSpeed - _currentSpeed;
-        if (MathF.Abs(d) < 0.02f)
+        if (MathF.Abs(d) < GameConfig.Bars.SpeedSnapEpsilon)
             _currentSpeed = _targetSpeed;
         else
-            _currentSpeed += d * SpeedLerpFactor;
+            _currentSpeed += d * GameConfig.Bars.SpeedLerpFactor;
     }
 
     public void Move() => Y += Math.Max(1, (int)MathF.Round(_currentSpeed));
@@ -70,17 +72,20 @@ public sealed class Bar
             HitFlashTimer--;
             if (HitFlashTimer == 0) PierceFlash = false;
         }
+        if (HitPulseFrames > 0) HitPulseFrames--;
     }
 
     public void RegisterHit()
     {
-        HitFlashTimer = 6;
+        HitFlashTimer = GameConfig.Bars.HitFlashFrames;
+        HitPulseFrames = GameConfig.Bars.HitPulseFrames;
         PierceFlash = false;
     }
 
     public void RegisterPierceHit()
     {
-        HitFlashTimer = 14;
+        HitFlashTimer = GameConfig.Bars.PierceHitFlashFrames;
+        HitPulseFrames = GameConfig.Bars.PierceHitPulseFrames;
         PierceFlash = true;
     }
 
@@ -93,5 +98,13 @@ public sealed class Bar
 
     public float HealthRatio => InitialHeight > 0 ? (float)Height / InitialHeight : 0f;
 
-    public Rectangle GetBounds() => new(X, Y, Width, Height);
+    public Rectangle GetBounds()
+    {
+        int visibleTop = Math.Max(Y, 0);
+        int visibleBottom = Y + Height;
+        int visibleHeight = visibleBottom - visibleTop;
+        if (visibleHeight <= 0) return new Rectangle(X, visibleTop, Width, 0);
+        return new Rectangle(X, visibleTop, Width, visibleHeight);
+    }
+    public Rectangle GetFullBounds() => new(X, Y, Width, Height);
 }

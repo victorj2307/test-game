@@ -22,6 +22,9 @@ public sealed class Bullet
 
     public bool IsActive { get; private set; } = true;
 
+    /// <summary>
+    /// Creates a bullet with optional lateral drift and optional pierce budget.
+    /// </summary>
     public Bullet(int x, int y, int width, int height, int speed, float driftX = 0f, int pierceCount = 0)
     {
         _x = x;
@@ -34,8 +37,10 @@ public sealed class Bullet
         IsPiercingVisual = pierceCount > 0;
     }
 
+    /// <summary>Marks the bullet inactive so update/collision can skip it.</summary>
     public void Deactivate() => IsActive = false;
 
+    /// <summary>Advances the bullet one simulation step.</summary>
     public void Update()
     {
         if (!IsActive) return;
@@ -43,6 +48,10 @@ public sealed class Bullet
         _y -= Speed;
     }
 
+    /// <summary>
+    /// Consumes one pierce charge.
+    /// Returns true when the bullet should continue through the current target.
+    /// </summary>
     public bool ConsumePierce()
     {
         if (RemainingPierces <= 0) return false;
@@ -50,5 +59,6 @@ public sealed class Bullet
         return true;
     }
 
+    /// <summary>Axis-aligned bounds used for collision checks.</summary>
     public Rectangle GetBounds() => new(X, Y, Width, Height);
 }

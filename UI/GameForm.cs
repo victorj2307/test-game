@@ -14,7 +14,7 @@ public sealed class GameForm : Form
     private const int GameStatusBarHeight = 30;
 
     /// <summary>~60 Hz; WM_TIMER coalesces slightly — <see cref="_frameWatch"/> supplies actual delta to <c>Update</c>.</summary>
-    private const int GameTimerIntervalMs = 16;
+    private const int GameTimerIntervalMs = GameConfig.Ui.GameTimerIntervalMs;
 
     private readonly System.Windows.Forms.Timer _gameTimer = new() { Interval = GameTimerIntervalMs };
     private readonly Stopwatch _frameWatch = new();
@@ -26,11 +26,12 @@ public sealed class GameForm : Form
     private long _lastFpsTimeMs;
     private int _framesThisSecond;
     private bool _runGameLoop;
+    private bool _gameOverEntryHandled;
 
     public GameForm()
     {
         Text = "Retro Blaster (WinForms)";
-        ClientSize = new Size(480, 640);
+        ClientSize = new Size(GameConfig.Ui.WindowWidth, GameConfig.Ui.WindowHeight);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         KeyPreview = true;
@@ -97,7 +98,8 @@ public sealed class GameForm : Form
         _gameTimer.Dispose();
     }
 
-    private int GetPlayHeight() => Math.Max(32, ClientSize.Height - _statusBar.Height);
+    /// <summary>Returns drawable gameplay height excluding the bottom status bar.</summary>
+    private int GetPlayHeight() => Math.Max(GameConfig.Ui.MinPlayHeight, ClientSize.Height - _statusBar.Height);
 
     private void OnClientOrSize(object? sender, EventArgs e)
     {
@@ -105,6 +107,7 @@ public sealed class GameForm : Form
         UpdateStartButtonLayout();
     }
 
+    /// <summary>Updates status/help line text according to current game state.</summary>
     private void UpdateStatusLine()
     {
         if (_game.IsGameOver)
@@ -133,6 +136,7 @@ public sealed class GameForm : Form
 #endif
     }
 
+    /// <summary>Centers the start/continue button near the bottom of the play area.</summary>
     private void UpdateStartButtonLayout()
     {
         int ph = GetPlayHeight();
@@ -141,9 +145,11 @@ public sealed class GameForm : Form
             Math.Max(0, ph - _btnStart.Height - StartButtonBottomMargin));
     }
 
+    /// <summary>Starts a new run and enables simulation loop/timer.</summary>
     private void StartGame()
     {
         _btnStart.Visible = false;
+        _gameOverEntryHandled = false;
         _game.StartNewGame(ClientSize.Width, GetPlayHeight());
         _runGameLoop = true;
         _frameWatch.Restart();
@@ -155,6 +161,7 @@ public sealed class GameForm : Form
         Invalidate();
     }
 
+    /// <summary>Continues gameplay after life-lost pause.</summary>
     private void ContinueLife()
     {
         _game.ContinueAfterLifeLost(ClientSize.Width, GetPlayHeight());
@@ -164,12 +171,14 @@ public sealed class GameForm : Form
         Invalidate();
     }
 
+    /// <summary>Starts a game or continues after life loss based on current state.</summary>
     private void OnStartOrContinueClick(object? sender, EventArgs e)
     {
         if (_game.IsLifeLost) ContinueLife();
         else StartGame();
     }
 
+    /// <summary>Handles gameplay and debug hotkeys while tracking held-key state.</summary>
     private void OnKeyDown(object? sender, KeyEventArgs e)
     {
         bool wasDown = !_keysDown.Add(e.KeyCode);
@@ -222,18 +231,19 @@ public sealed class GameForm : Form
 
     private void OnKeyUp(object? sender, KeyEventArgs e) => _keysDown.Remove(e.KeyCode);
 
+    /// <summary>Main timer callback: computes dt, updates simulation, and schedules repaint.</summary>
     private void GameLoopTick(object? sender, EventArgs e)
     {
         if (!_runGameLoop) return;
 
         float dt = (float)_frameWatch.Elapsed.TotalSeconds;
         _frameWatch.Restart();
-        if (dt < 1f / 500f) dt = 1f / 500f;
-        if (dt > 0.25f) dt = 0.25f;
+        if (dt < GameConfig.Ui.MinDeltaSeconds) dt = GameConfig.Ui.MinDeltaSeconds;
+        if (dt > GameConfig.Ui.MaxDeltaSeconds) dt = GameConfig.Ui.MaxDeltaSeconds;
 
         long now = Environment.TickCount64;
         _framesThisSecond++;
-        if (now - _lastFpsTimeMs >= 1000)
+        if (now - _lastFpsTimeMs >= GameConfig.Ui.FpsWindowMs)
         {
             _game.DebugFps = _framesThisSecond;
             _framesThisSecond = 0;
@@ -259,6 +269,11 @@ public sealed class GameForm : Form
         }
         if (_game.IsGameOver)
         {
+            if (!_gameOverEntryHandled)
+            {
+                _gameOverEntryHandled = true;
+                HandleLeaderboardOnGameOver();
+            }
             _gameTimer.Stop();
             _runGameLoop = false;
             _btnStart.Visible = true;
@@ -268,6 +283,56 @@ public sealed class GameForm : Form
         }
 
         Invalidate();
+    }
+
+    /// <summary>Handles score submission prompt when game-over score qualifies for leaderboard.</summary>
+    private void HandleLeaderboardOnGameOver()
+    {
+        if (!_game.ScoreQualifiesForLeaderboard()) return;
+        string? entered = PromptForName();
+        string playerName = string.IsNullOrWhiteSpace(entered) ? GameConfig.Persistence.DefaultPlayerName : entered.Trim();
+        _game.SubmitLeaderboardScore(playerName);
+    }
+
+    /// <summary>Shows modal player-name prompt for leaderboard entry.</summary>
+    private string? PromptForName()
+    {
+        using var dialog = new Form
+        {
+            Text = "New High Score",
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent,
+            MinimizeBox = false,
+            MaximizeBox = false,
+            ShowInTaskbar = false,
+            ClientSize = new Size(320, 150)
+        };
+        var lbl = new Label
+        {
+            AutoSize = true,
+            Text = "You made the leaderboard! Enter your name:",
+            Location = new Point(12, 14)
+        };
+        var input = new TextBox
+        {
+            Location = new Point(15, 45),
+            Width = 288,
+            MaxLength = GameConfig.Persistence.NameInputMaxLength
+        };
+        var ok = new Button
+        {
+            Text = "OK",
+            DialogResult = DialogResult.OK,
+            Width = 88,
+            Height = 30,
+            Location = new Point(121, 90)
+        };
+        dialog.Controls.Add(lbl);
+        dialog.Controls.Add(input);
+        dialog.Controls.Add(ok);
+        dialog.AcceptButton = ok;
+        dialog.ActiveControl = input;
+        return dialog.ShowDialog(this) == DialogResult.OK ? input.Text : null;
     }
 
     protected override void OnPaint(PaintEventArgs e)

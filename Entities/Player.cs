@@ -1,4 +1,5 @@
 using System.Drawing;
+using Game.Core;
 
 namespace Game.Entities;
 
@@ -13,7 +14,7 @@ public sealed class Player
     public int Width { get; }
     public int Height { get; }
 
-    public int MuzzlePortWidth { get; } = 8;
+    public int MuzzlePortWidth { get; } = GameConfig.Player.MuzzlePortWidth;
 
     public Player(int x, int y, int width, int height)
     {
@@ -38,7 +39,7 @@ public sealed class Player
         int w = MuzzlePortWidth;
         w = w > Width ? Width - 1 : w;
         if (w < 1) w = 1;
-        return new Rectangle(X + (Width - w) / 2, Y - 2, w, 2);
+        return new Rectangle(X + (Width - w) / 2, Y - GameConfig.Player.MuzzlePortYOffset, w, GameConfig.Player.MuzzlePortHeight);
     }
 
     public void ClampAndSnapToGrid(int clientWidth, int stepPixels)

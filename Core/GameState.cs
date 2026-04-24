@@ -6,16 +6,15 @@ namespace Game.Core;
 /// <summary>Mutable run data: score, combo, flags, difficulty knobs, and input cadence timers.</summary>
 public sealed class GameState
 {
-    public const int ComboMaxMultiplier = 4;
-    public const int ComboTimeWindowFrames = 90;
-    private const int MaxBarsOnScreenBase = 3;
-    private const int MaxBarsOnScreenScoreStep = 5;
-    private const int MaxBarsOnScreenHardCap = 10;
+    private const int LeaderboardMaxEntries = GameConfig.Persistence.LeaderboardMaxEntries;
+    public const int ComboMaxMultiplier = GameConfig.Scoring.ComboMaxMultiplier;
+    public const int ComboTimeWindowFrames = GameConfig.Scoring.ComboTimeWindowFrames;
 
     public bool IsPlaying { get; set; }
     public bool IsGameOver { get; set; }
     public bool IsLifeLost { get; set; }
     public bool IsPaused { get; set; }
+    public bool ShowLeaderboard { get; set; }
     /// <summary>Relaxed difficulty, boosted drops, optional hotkeys; toggled at runtime (persists across new games).</summary>
     public bool IsDevMode { get; set; }
     public int Score { get; set; }
@@ -34,6 +33,8 @@ public sealed class GameState
     public int BarSpeed { get; set; }
     public int SpawnCountdown { get; set; }
     public int SpawnIntervalFrames { get; set; }
+    public int DynamicMaxBarsOnScreen { get; set; }
+    public float Difficulty01 { get; set; }
     public int? NextSpawnLaneX { get; set; }
 
     public long LastFireTimeMs { get; set; }
@@ -83,35 +84,38 @@ public sealed class GameState
     public int ComboMultiplier => Math.Min(_combo, ComboMaxMultiplier);
     public int ComboStreak => _combo;
 
-    public int MaxBarsOnScreen =>
-        Math.Min(MaxBarsOnScreenHardCap, MaxBarsOnScreenBase + Score / MaxBarsOnScreenScoreStep);
+    public int MaxBarsOnScreen => DynamicMaxBarsOnScreen;
 
     /// <summary>Spawn countdown uses this so dev mode keeps spawns from feeling frantic.</summary>
     public int EffectiveSpawnIntervalFrames =>
-        IsDevMode ? Math.Max(72, SpawnIntervalFrames) : SpawnIntervalFrames;
+        IsDevMode ? Math.Max(GameConfig.Difficulty.DevMinSpawnIntervalFrames, SpawnIntervalFrames) : SpawnIntervalFrames;
 
     /// <summary>Fewer simultaneous bars in dev mode for clearer testing.</summary>
     public int EffectiveMaxBarsOnScreen =>
-        IsDevMode ? Math.Min(4, MaxBarsOnScreen) : MaxBarsOnScreen;
+        IsDevMode ? Math.Min(GameConfig.Difficulty.DevMaxBarsOnScreen, MaxBarsOnScreen) : MaxBarsOnScreen;
 
+    /// <summary>Resets all run-scoped state to new-game defaults.</summary>
     public void ResetRun(int initialBarSpeed, int initialSpawnIntervalFrames)
     {
         Score = 0;
-        Lives = 3;
+        Lives = GameConfig.Scoring.StartingLives;
         IsGameOver = false;
         IsLifeLost = false;
         IsPaused = false;
+        ShowLeaderboard = false;
         ElapsedFrames = 0;
         BarSpeed = initialBarSpeed;
         SpawnIntervalFrames = initialSpawnIntervalFrames;
-        SpawnCountdown = 30;
+        DynamicMaxBarsOnScreen = GameConfig.Difficulty.MinBarsOnScreen;
+        Difficulty01 = 0f;
+        SpawnCountdown = GameConfig.Spawn.InitialSpawnCountdownFrames;
         NextSpawnLaneX = null;
         _combo = 0;
         _lastDestroyFrame = -1;
         MaxCombo = 0;
         KillsInWindow = 0;
         LastFireTimeMs = 0;
-        HighScore = HighScoreStore.Load();
+        HighScore = HighScoreStore.GetBestScore(LeaderboardMaxEntries);
         PreviousBestScore = HighScore;
         IsNewBestThisRun = false;
         NewBestFlashFrames = 0;
@@ -134,13 +138,14 @@ public sealed class GameState
 #endif
     }
 
+    /// <summary>Resets volatile state after a non-terminal life loss.</summary>
     public void ResetAfterLifeLost()
     {
-        SpawnCountdown = 30;
+        SpawnCountdown = GameConfig.Spawn.InitialSpawnCountdownFrames;
         NextSpawnLaneX = null;
         KillsInWindow = 0;
         MuzzleFlashFrames = 0;
-        LifeLostFlashFrames = 18;
+        LifeLostFlashFrames = GameConfig.Effects.LifeLostFlashFrames;
         LastFireTimeMs = 0;
         BarsSinceLastPowerUpDrop = 0;
         _combo = 0;
@@ -154,6 +159,7 @@ public sealed class GameState
         ClearShieldFx();
     }
 
+    /// <summary>Clears shield-related transient visual state.</summary>
     public void ClearShieldFx()
     {
         ShieldPickupFlashFrames = 0;
@@ -162,12 +168,14 @@ public sealed class GameState
         ShieldImpactShakeFrames = 0;
     }
 
-    public void TriggerBombImpactFx(int flashFrames = 14, int heavyShakeFrames = 22)
+    /// <summary>Sets bomb detonation flash/shake feedback with max-preserving behavior.</summary>
+    public void TriggerBombImpactFx(int flashFrames = GameConfig.Effects.BombScreenFlashFrames, int heavyShakeFrames = GameConfig.Effects.BombHeavyShakeFrames)
     {
         BombScreenFlashFrames = Math.Max(BombScreenFlashFrames, flashFrames);
         BombHeavyShakeFrames = Math.Max(BombHeavyShakeFrames, heavyShakeFrames);
     }
 
+    /// <summary>Clears active bomb impact feedback values.</summary>
     public void ClearBombImpactFx()
     {
         BombScreenFlashFrames = 0;
@@ -177,12 +185,12 @@ public sealed class GameState
     /// <summary>~200–500 ms at game tick rate: random point in play rect, then fuse counts down each frame.</summary>
     public void BeginPendingBomb(Random rng, int playWidth, int playHeight)
     {
-        const int margin = 28;
+        int margin = GameConfig.Effects.BombIndicatorMargin;
         int innerW = Math.Max(1, playWidth - 2 * margin);
         int innerH = Math.Max(1, playHeight - 2 * margin);
         BombIndicatorX = margin + (float)rng.NextDouble() * innerW;
         BombIndicatorY = margin + (float)rng.NextDouble() * innerH;
-        BombFuseFramesLeft = rng.Next(12, 32);
+        BombFuseFramesLeft = rng.Next(GameConfig.Effects.BombFuseMinFrames, GameConfig.Effects.BombFuseMaxExclusiveFrames);
     }
 
     public void ClearPendingBomb() => BombFuseFramesLeft = 0;
@@ -198,6 +206,7 @@ public sealed class GameState
     /// <summary>Seconds since last simulation tick (clamped by <c>GameForm</c>). Exposed for debug HUD / future variable-step tuning.</summary>
     public float LastDeltaSeconds { get; private set; }
 
+    /// <summary>Advances general per-frame timers and decays transient state.</summary>
     public void AdvanceFrame(float deltaSeconds)
     {
         LastDeltaSeconds = deltaSeconds;
@@ -227,9 +236,9 @@ public sealed class GameState
         }
     }
 
-    public void RegisterBarDestroyed()
+    /// <summary>Registers one bar destruction for score/combo/high-score and feedback timing.</summary>
+    public void RegisterBarDestroyed(bool isSpecial = false)
     {
-        int prevBest = HighScore;
         if (_lastDestroyFrame >= 0 && ElapsedFrames - _lastDestroyFrame <= ComboTimeWindowFrames)
             _combo++;
         else
@@ -237,63 +246,64 @@ public sealed class GameState
         _lastDestroyFrame = ElapsedFrames;
         if (_combo > MaxCombo) MaxCombo = _combo;
         int mult = ComboMultiplier;
-        Score += mult;
+        int specialMult = isSpecial ? GameConfig.Scoring.SpecialBarScoreMultiplier : 1;
+        Score += mult * specialMult;
         if (!IsNewBestThisRun && Score > PreviousBestScore)
         {
             IsNewBestThisRun = true;
-            NewBestFlashFrames = 150;
+            NewBestFlashFrames = GameConfig.Effects.NewBestFlashFrames;
         }
-        if (Score > prevBest)
-        {
-            HighScore = Score;
-            HighScoreStore.TrySaveIfBetter(Score, prevBest);
-        }
+        if (Score > HighScore) HighScore = Score;
         KillsInWindow++;
-        ShakeUntilTickMs = Environment.TickCount64 + 120;
+        ShakeUntilTickMs = Environment.TickCount64 + GameConfig.Effects.DestroyShakeMs;
     }
 
+    /// <summary>Consumes one life and returns true when lives are depleted.</summary>
     public bool LoseLife()
     {
         if (Lives > 0) Lives--;
         return Lives <= 0;
     }
 
+    /// <summary>Transitions state into terminal game-over mode.</summary>
     public void ApplyGameOverShakeAndClearMuzzle()
     {
         IsGameOver = true;
         IsLifeLost = false;
         IsPaused = false;
         IsPlaying = false;
+        ShowLeaderboard = true;
         MuzzleFlashFrames = 0;
-        ShakeUntilTickMs = Environment.TickCount64 + 280;
+        ShakeUntilTickMs = Environment.TickCount64 + GameConfig.Effects.GameOverShakeMs;
     }
 
+    /// <summary>Activates a newly collected power-up and initializes its duration/state.</summary>
     public void ActivatePowerUp(PowerUpType type)
     {
         ActivePowerUp = type;
         switch (type)
         {
             case PowerUpType.RapidFire:
-                PowerUpTimerFrames = 320;
+                PowerUpTimerFrames = GameConfig.PowerUps.RapidFireDurationFrames;
                 ActivePowerUpDurationFrames = PowerUpTimerFrames;
                 break;
             case PowerUpType.MultiShot:
-                PowerUpTimerFrames = 220;
+                PowerUpTimerFrames = GameConfig.PowerUps.MultiShotDurationFrames;
                 ActivePowerUpDurationFrames = PowerUpTimerFrames;
                 break;
             case PowerUpType.PiercingShot:
-                PowerUpTimerFrames = 260;
+                PowerUpTimerFrames = GameConfig.PowerUps.PiercingDurationFrames;
                 ActivePowerUpDurationFrames = PowerUpTimerFrames;
                 break;
             case PowerUpType.SlowMotion:
-                PowerUpTimerFrames = 320;
+                PowerUpTimerFrames = GameConfig.PowerUps.SlowMotionDurationFrames;
                 ActivePowerUpDurationFrames = PowerUpTimerFrames;
                 break;
             case PowerUpType.Shield:
-                ShieldCharges = 1;
+                ShieldCharges = GameConfig.PowerUps.ShieldCharges;
                 PowerUpTimerFrames = 0;
                 ActivePowerUpDurationFrames = 0;
-                ShieldPickupFlashFrames = Math.Max(ShieldPickupFlashFrames, 22);
+                ShieldPickupFlashFrames = Math.Max(ShieldPickupFlashFrames, GameConfig.PowerUps.ShieldPickupFlashFrames);
                 GameAudio.PlayShieldPickup();
                 break;
             case PowerUpType.BombShot:
@@ -308,25 +318,50 @@ public sealed class GameState
 
     public void RegisterPowerUpDrop() => BarsSinceLastPowerUpDrop = 0;
 
+    /// <summary>Returns current fire cooldown after active modifiers and difficulty scaling.</summary>
     public int GetFireCooldownMs(int defaultMs) =>
-        ActivePowerUp == PowerUpType.RapidFire && PowerUpTimerFrames > 0
+        ComputeDifficultyScaledFireCooldown(defaultMs);
+
+    /// <summary>
+    /// Player movement uses fixed grid steps, so speed scaling is applied as a shorter step cooldown at higher difficulty.
+    /// Formula: <c>cooldown = base - barSpeedTerm - scoreTerm</c>, then clamped for control.
+    /// </summary>
+    public int GetPlayerStepCooldownMs(int baseCooldownMs)
+    {
+        int barSpeedTerm = Math.Max(0, GetEffectiveBarSpeed() - 1) * 10;
+        int scoreTerm = Math.Min(12, Score / 30);
+        int adjusted = baseCooldownMs - barSpeedTerm - scoreTerm;
+        return Math.Clamp(adjusted, 34, baseCooldownMs);
+    }
+
+    private int ComputeDifficultyScaledFireCooldown(int defaultMs)
+    {
+        int baseCooldown = ActivePowerUp == PowerUpType.RapidFire && PowerUpTimerFrames > 0
             ? Math.Max(30, defaultMs / 2)
             : defaultMs;
+        int barSpeedTerm = Math.Max(0, GetEffectiveBarSpeed() - 1) * 4;
+        int scoreTerm = Math.Min(10, Score / 45);
+        int adjusted = baseCooldown - barSpeedTerm - scoreTerm;
+        return Math.Clamp(adjusted, 24, defaultMs);
+    }
 
     /// <summary>
     /// Pierce budget for new bullets while Piercing Shot is active. Value <c>2</c> allows each bullet to damage up to <b>three</b> bars before removal (see <c>Bullet.ConsumePierce</c>).
     /// </summary>
     public int GetPierceCount() =>
-        ActivePowerUp == PowerUpType.PiercingShot && PowerUpTimerFrames > 0 ? 2 : 0;
+        ActivePowerUp == PowerUpType.PiercingShot && PowerUpTimerFrames > 0 ? GameConfig.PowerUps.PierceCount : 0;
 
+    /// <summary>Returns true when multishot should apply to newly fired bullets.</summary>
     public bool IsMultiShotActive =>
         ActivePowerUp == PowerUpType.MultiShot && PowerUpTimerFrames > 0;
 
+    /// <summary>Returns bar speed after active slow-motion modifier.</summary>
     public int GetEffectiveBarSpeed() =>
         ActivePowerUp == PowerUpType.SlowMotion && PowerUpTimerFrames > 0
-            ? Math.Max(1, BarSpeed / 2)
+            ? Math.Max(1, BarSpeed / GameConfig.PowerUps.SlowMotionDivisor)
             : BarSpeed;
 
+    /// <summary>Consumes active shield charge and triggers shield-block feedback.</summary>
     public bool TryConsumeShield()
     {
         if (ShieldCharges <= 0) return false;
@@ -336,11 +371,11 @@ public sealed class GameState
             ActivePowerUp = null;
             ActivePowerUpDurationFrames = 0;
         }
-        ShieldBlockFlashFrames = Math.Max(ShieldBlockFlashFrames, 14);
-        ShieldBlockRingFrames = Math.Max(ShieldBlockRingFrames, 18);
-        ShieldImpactShakeFrames = Math.Max(ShieldImpactShakeFrames, 12);
+        ShieldBlockFlashFrames = Math.Max(ShieldBlockFlashFrames, GameConfig.PowerUps.ShieldBlockFlashFrames);
+        ShieldBlockRingFrames = Math.Max(ShieldBlockRingFrames, GameConfig.PowerUps.ShieldBlockRingFrames);
+        ShieldImpactShakeFrames = Math.Max(ShieldImpactShakeFrames, GameConfig.PowerUps.ShieldImpactShakeFrames);
         long now = Environment.TickCount64;
-        ShakeUntilTickMs = Math.Max(ShakeUntilTickMs, now + 140);
+        ShakeUntilTickMs = Math.Max(ShakeUntilTickMs, now + GameConfig.PowerUps.ShieldBlockShakeMs);
         GameAudio.PlayShieldBlock();
         return true;
     }

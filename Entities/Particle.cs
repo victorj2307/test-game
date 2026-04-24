@@ -12,6 +12,7 @@ public sealed class Particle
     public int Lifetime { get; private set; }
     public Color Color { get; }
 
+    /// <summary>Constructs a short-lived spark particle.</summary>
     public Particle(float x, float y, float vx, float vy, int lifetime, Color color)
     {
         X = x;
@@ -22,6 +23,7 @@ public sealed class Particle
         Color = color;
     }
 
+    /// <summary>Advances particle motion and decrements lifetime.</summary>
     public void Update()
     {
         if (Lifetime <= 0) return;
@@ -32,5 +34,6 @@ public sealed class Particle
         Lifetime--;
     }
 
+    /// <summary>True once lifetime reaches zero.</summary>
     public bool IsDead => Lifetime <= 0;
 }
