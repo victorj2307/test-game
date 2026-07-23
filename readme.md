@@ -40,7 +40,7 @@ Simulation and rendering are split into a thin **`Game.Core.GameManager`** orche
 | **Input** | Keyboard + WinForms controls | `KeyPreview` on the form, `KeyDown` / `KeyUp`, and a `HashSet<Keys>` for held keys. **Space (held)** with a **~100 ms** cooldown in `GameManager` for auto-fire. **ESC** toggles pause/resume (disabled during life-lost, final-death breakup, and game-over states). **F1** toggles debug draw in all builds. **F2** and dev **1–6** hotkeys are compiled only under **`#if DEBUG`** (`GameForm`, `GameManager.ToggleDevMode` / `TryDevActivatePowerUpDigit`); **Release** builds cannot turn dev mode on from the keyboard, and **`ResetRun`** forces **`IsDevMode = false`** (`#if !DEBUG` in `GameState`). During life-lost pause, **Enter/Space** continues. |
 | **Entry point** | `Program.cs` | `[STAThread]`, `ApplicationConfiguration.Initialize()` (high-DPI / WinForms bootstrap in modern .NET), `Application.Run(new GameForm())`. |
 | **Build output** | `WinExe` | Assembly name `RetroArcade`, root namespace `Game`. |
-| **Solution** | `ArcadeGame.sln` | Optional; includes `ArcadeGame.csproj` for **Visual Studio** and CLI workflows. |
+| **Solution** | `ArcadeGame.sln` | Includes **`ArcadeGame.csproj`** (game) and **`RetroArcade.Tests`** (MSTest). |
 
 **Not used:** Unity, MonoGame, SDL, Skia, WPF, DirectX wrappers, or any external libraries for rendering, audio, or physics.
 
@@ -62,14 +62,14 @@ Simulation and rendering are split into a thin **`Game.Core.GameManager`** orche
 - **Non-overlapping spawns** — New bars must pass both checks: no **AABB overlap** and minimum **horizontal spacing padding** from existing bar X positions. Placement computes spawn Y from horizontally overlapping bars (highest Y wins), then runs overlap checks. Uses bounded random retries and a left-to-right scan fallback; if no valid slot exists, spawn is skipped for a short retry window.
 - **Concurrent bar cap** — `MaxBarsOnScreen` comes from a smooth difficulty-driven target (`DynamicMaxBarsOnScreen`, clamped), while **`SpawnSystem`** still enforces `EffectiveMaxBarsOnScreen` and dev-mode cap behavior.
 - **Damage & collisions** — Bullet vs bar uses **`Rectangle.IntersectsWith`** against each bar’s **visible on-screen bounds** (`top = max(Y, 0)`, `bottom = Y + height`), so there are no invisible hitboxes. Spawn placement still uses full-size bounds to keep newly created bars from overlapping.
-- **Immediate power-up activation** — Collected power-ups activate instantly on pickup and replace any current active effect (single-active model).
+- **Immediate power-up activation** — Collected power-ups activate instantly on pickup. The HUD **`ActivePowerUp`** slot is single-active (last timed buff / shield pickup wins the card). **`ShieldCharges`** are separate: picking Rapid/Multi/Pierce/Slow/Bomb does **not** clear an existing shield charge, so floor protection can remain while another effect is shown.
 - **Power-up drop consistency** — Drops use a base random chance (**10%**) plus bad-luck protection: once the no-drop counter reaches **12** destroyed bars, that threshold destroy is forced to drop. **Dev mode** uses **~55%** per destroy and forces at threshold **3** ([`SpawnSystem.TrySpawnPowerUpAt`](Systems/SpawnSystem.cs)).
 
 ### User experience & presentation
 
-- **Start gate** — Simulation does not advance until **Start** (or **Enter** as `AcceptButton`). After game over, **Play again** returns and the **idle-driven loop** stays off until a new start.
+- **Start gate** — Simulation does not advance until **Start** (or **Enter** as `AcceptButton`). After game over, **Play again** returns and the **`Forms.Timer` run loop** stays off until a new start.
 - **Muzzle / shot line** — Gold muzzle port and warm aim line align with **`Player.GetBulletSpawn`** / **`MuzzleTopCenter`**.
-- **HUD** — Visual HUD with **life icons** (top-left; count matches **`MaxLives`**), a boxed **SCORE** label+value (top-right), secondary **BEST** beneath it, emphasized **COMBO** when active, and a **centered active power-up card**: large colored glyph on top, short **uppercase** label beneath (**RAPID**, **MULTI**, **PIERCE**, **SHIELD**, **SLOW**, **BOMB**), plus a **timer bar** when the effect is timed.
+- **HUD** — Visual HUD with **life icons** (top-left; count matches **`MaxLives`**), a boxed **SCORE** label+value (top-right), secondary **BEST** beneath it, emphasized **COMBO** when active, and a **centered active power-up card**: large colored glyph on top, short **uppercase** label beneath (**RAPID**, **MULTI**, **PIERCE**, **SHIELD**, **SLOW**), plus a **timer bar** when the effect is timed. **Bomb** uses a playfield fuse marker instead of that timed card.
 - **Overlays** — Attract: **READY?** + start hint. Pause: semi-transparent overlay with **PAUSED** and an ESC continue hint. Life lost: semi-transparent overlay with **LIFE LOST**, remaining life icons, continue hint, and dedicated life-lost SFX. Game over: darker/stronger overlay that presents **FINAL RESULTS**, a glowing **GAME OVER** title, and leaderboard panel.
 - **Status bar** — Docked bottom **`Panel` + `Label`**; play height = client height minus bar height; **`OnPaint`** clips to the play rectangle.
 - **Double-buffered** form to reduce flicker.
@@ -175,16 +175,23 @@ RetroArcade (repo root)
 ├── ArcadeGame.sln
 ├── ArcadeGame.csproj
 ├── Program.cs
+├── gameconfig.json.example
+├── .github/workflows/ci.yml
 ├── Core/
 │   ├── GameManager.cs
 │   ├── GameState.cs
+│   ├── GameConfig.cs
+│   ├── GameRuntimeConfig.cs
 │   ├── EntityManager.cs
-│   └── HighScoreStore.cs
+│   ├── HighScoreStore.cs
+│   └── DebugSelfTests.cs
 ├── Entities/
 │   ├── Player.cs
 │   ├── Bar.cs
 │   ├── Bullet.cs
 │   ├── Particle.cs
+│   ├── Fragment.cs
+│   ├── ExplosionFx.cs
 │   ├── BarType.cs
 │   ├── PowerUp.cs
 │   └── PowerUpType.cs
@@ -199,10 +206,18 @@ RetroArcade (repo root)
 │   └── SoundGenerator.cs
 ├── UI/
 │   └── GameForm.cs
+├── RetroArcade.Tests/
+│   ├── RetroArcade.Tests.csproj
+│   ├── CoreInvariantTests.cs
+│   ├── CollisionSystemTests.cs
+│   ├── DifficultySystemTests.cs
+│   ├── SpawnSystemTests.cs
+│   ├── HighScoreStoreTests.cs
+│   └── GameFlowTests.cs
 └── readme.md
 ```
 
-At runtime, **`highscore.json`** is stored under `%AppData%/RetroArcade/` (with one-time migration from legacy executable-adjacent storage when present).
+At runtime, **`highscore.json`** is stored under `%AppData%/RetroArcade/` (with one-time migration from legacy executable-adjacent storage when present). Optional **`gameconfig.json`** beside the executable can override a few tunables (`collisionLaneWidth`, `audioVariantCount`, `difficultyTimeScaleFrames`); copy from **`gameconfig.json.example`**.
 
 Example `highscore.json`:
 
@@ -225,10 +240,11 @@ Example `highscore.json`:
 | `UI/GameForm.cs` | **`Forms.Timer`** tick, **`Stopwatch`** delta per tick, keys, **Start / Continue / Play again** button flow, status strip, clip + **`Game.Core.GameManager.Draw`**, FPS sample for debug. |
 | `Core/GameManager.cs` | **`DamagePerHit`**; **`Game.Entities.Player`**; composes **`Game.Core.GameState`**, **`Game.Core.EntityManager`**, **`Game.Systems.DifficultySystem`**, **`Game.Systems.CollisionSystem`**, **`Game.Systems.SpawnSystem`**, **`Game.Rendering.RenderSystem`**. Floor-hit handling respects dev mode; **`ToggleDevMode`** / **`TryDevActivatePowerUpDigit`**. |
 | `Core/GameState.cs` | Run data; reset flows; combo/lives/high-score/new-best/pause flags; leaderboard visibility flag; difficulty and cadence fields; **`IsDevMode`** and effective spawn/cap helpers for dev tuning. |
-| `Core/EntityManager.cs` | **`Bars`**, **`Bullets`**, **`Particles`**, **`Fragments`**; update and culling helpers. |
+| `Core/EntityManager.cs` | **`Bars`**, **`Bullets`**, **`Particles`**, **`Fragments`**, **`PowerUps`**, **`Explosions`**; update and culling helpers. |
 | `Entities/Fragment.cs` | Shared rectangular debris effect entity (position, velocity, size, gravity, lifetime, fade basis). |
 | `Core/HighScoreStore.cs` | JSON load/save for Top-10 leaderboard entries (with legacy migration), plus normalization + best-score-per-name logic. |
 | `Core/GameConfig.cs` | Centralized tunable constants grouped by gameplay area (player, bars, spawn, difficulty, power-ups, effects, visuals, persistence). |
+| `Core/GameRuntimeConfig.cs` | Optional JSON overrides (`gameconfig.json`) with safe defaults when missing/invalid. |
 | `Systems/SpawnSystem.cs` | **`TrySpawn`**, overlap/spacing validation, overlap-aware spawn Y stacking, types/heights, **`BarWidth`**. |
 | `Systems/CollisionSystem.cs` | **`Resolve`**: hits, audio/particles/fragments, destroy hooks, bomb wave queue, and staggered bomb fragmentation. |
 | `Systems/DifficultySystem.cs` | Table-driven difficulty progression with time-keyframe interpolation for speed/spawn/cap. |
@@ -344,7 +360,7 @@ Gameplay SFX and **`PlayTone`** bank lookups use a process-wide lock so lazy-cre
 | **World lists** | **`EntityManager`** (bars, bullets, particles, fragments, power-up drops, explosion FX—**not** the player). |
 | **Creating enemies** | **`SpawnSystem`** (random + lane + cluster + overlap + cap). |
 | **Hits & destroys** | **`CollisionSystem.Resolve`**: normal bullets stop on first bar; **piercing** bullets use **`Bullet.ConsumePierce`** and repeat passes that skip already-hit bars in the same frame. Bullet hits spawn subtle directional fragments; bomb destruction uses staggered radial fragmentation for high-impact breakup. |
-| **Power-up activation** | **`GameManager`** + **`GameState`** (pickup activates immediately; one active power-up at a time). **Shield**: one charge (**`ShieldCharges`**), HUD **SHIELD**, cyan ellipse + glow on the player (**`RenderSystem.DrawShieldPlayerFx`**), pickup pulse + **`GameAudio.PlayShieldPickup`**, floor block via **`TryConsumeShield`** (ring burst, flash, **`PlayShieldBlock`**). **Bomb**: fuse + **`ExecuteBombExplosionAt`**, then staggered **`TickPendingBombKills`** + screen flash / heavy shake + **`ExplosionFx`**. |
+| **Power-up activation** | **`GameManager`** + **`GameState`** (pickup activates immediately). HUD **`ActivePowerUp`** is one slot at a time; **`ShieldCharges`** can remain while a timed buff occupies the card. **Shield**: one charge (**`ShieldCharges`**), HUD **SHIELD** when that is the active card, cyan ellipse + glow on the player (**`RenderSystem.DrawShieldPlayerFx`**), pickup pulse + **`GameAudio.PlayShieldPickup`**, floor block via **`TryConsumeShield`** (ring burst, flash, **`PlayShieldBlock`**). **Bomb**: fuse + **`ExecuteBombExplosionAt`**, then staggered **`TickPendingBombKills`** + screen flash / heavy shake + **`ExplosionFx`**. |
 | **Difficulty table + interpolation** | **`DifficultySystem`**. |
 | **Drawing** | **`RenderSystem`** (all GDI+ for the playfield; bounded shared caches for pens/brushes/fonts). |
 | **Shared GDI cleanup** | **`GameForm`** `FormClosed` → **`GameManager.DisposeResources`** → **`RenderSystem.DisposeSharedResources`** (dispose cached pens/brushes/fonts and sky gradient). |
@@ -366,13 +382,16 @@ Gameplay SFX and **`PlayTone`** bank lookups use a process-wide lock so lazy-cre
 ### .NET CLI
 
 ```bash
-dotnet build
-dotnet run
+dotnet build ArcadeGame.sln
+dotnet test ArcadeGame.sln
+dotnet run --project ArcadeGame.csproj
 ```
 
-Release example: `dotnet run -c Release`
+Release example: `dotnet run --project ArcadeGame.csproj -c Release`
 
-Output: `bin/<Configuration>/net8.0-windows/RetroArcade.exe` (see **`AssemblyName`** in the csproj).
+Output: `bin/<Configuration>/net8.0-windows/RetroArcade.exe` (see **`AssemblyName`** in the csproj). **`gameconfig.json.example`** is copied next to the exe; rename/copy to **`gameconfig.json`** to apply optional overrides.
+
+CI: GitHub Actions workflow **`.github/workflows/ci.yml`** runs restore, Release build, and tests on Windows.
 
 ### Visual Studio
 
@@ -425,7 +444,7 @@ These keys exist only in **Debug** builds (`#if DEBUG` in **`GameForm`**). **`Ga
   | `PiercingShot` | PIERCE | Medium purple | Diamond (rotated square) |
   | `Shield` | SHIELD | Light cyan (`ARGB` ~70,210,255) | Filled shield polygon |
   | `SlowMotion` | SLOW | Cyan | Filled circle + clock arc + hand |
-  | `BombShot` | BOMB | Orange red | Oval body + fuse line |
+  | `BombShot` | *(none — fuse marker)* | Orange red | Oval body + fuse line on drop / fuse indicator; does not occupy the timed HUD card |
 
 - **Start button** — Centered horizontally, above bottom margin in play coords; hidden during a run; flat style with hover.
 
@@ -523,7 +542,7 @@ Rebuild after edits and smoke-test movement, spawn cap, combo, power-up activati
 - **Threading** — Single-threaded; huge entity counts could stutter.
 - **Audio** — Procedural only; no bundled WAV assets.
 - **Resize** — Fixed form border in the sample; resize still reclamps the player via **`OnClientResize`**.
-- **Persistence** — Only local **`highscore.json`** leaderboard data; no settings file.
+- **Persistence** — Local **`highscore.json`** leaderboard under AppData. Optional runtime overrides via **`gameconfig.json`** next to the exe (see **`gameconfig.json.example`** / **`GameRuntimeConfig`**); missing or invalid values fall back to **`GameConfig`** defaults.
 - **Growth** — Further splits can stay in the same assembly (partial classes or helpers) without introducing a full engine.
 
 ---
@@ -540,7 +559,7 @@ Rebuild after edits and smoke-test movement, spawn cap, combo, power-up activati
 
 ## Test coverage status
 
-Current automated coverage (`RetroArcade.Tests`):
+Current automated coverage (`RetroArcade.Tests`, included in **`ArcadeGame.sln`**):
 
 - Spawn non-overlap behavior
 - Difficulty ramp/clamp behavior
@@ -548,15 +567,19 @@ Current automated coverage (`RetroArcade.Tests`):
 - Piercing collision same-frame repeat-hit guard
 - Core invariants migrated from debug self-tests
 - In-memory leaderboard qualification rule
+- Shield charges persist across timed buff HUD swap
+- Shield floor-hit precedence (consume charge, no life lost)
+- Life-lost / continue transition ordering
+- Pause skips simulation side effects
+- Bomb fuse countdown and staggered kill queue
 
-Not yet covered (recommended next):
+Run locally: `dotnet test ArcadeGame.sln`
 
-- Life-lost/continue transition ordering
-- Shield floor-hit precedence
-- Bomb queue/stagger timing behavior
-- Pause/update ordering invariants
+Optional next coverage:
 
-Deep static audit notes are tracked in `full-code-audit.md`.
+- Corrupt / oversized `highscore.json` fail-closed behavior
+- `GameRuntimeConfig` invalid JSON fallback
+- Final-death animation completion → game over
 
 ---
 

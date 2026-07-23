@@ -48,6 +48,12 @@ public sealed class GameManager
     public bool IsDevMode => _state.IsDevMode;
     public int Score => _state.Score;
     public bool IsGameOver => _state.IsGameOver;
+
+    /// <summary>Test-only access to run state (via InternalsVisibleTo).</summary>
+    internal GameState StateForTests => _state;
+
+    /// <summary>Test-only access to world entities (via InternalsVisibleTo).</summary>
+    internal EntityManager EntitiesForTests => _entities;
     public int ElapsedFrames => _state.ElapsedFrames;
     public int HighScore => _state.HighScore;
     public int Lives => _state.Lives;

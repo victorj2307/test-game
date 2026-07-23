@@ -382,7 +382,11 @@ public sealed class GameState
         return true;
     }
 
-    /// <summary>Activates a newly collected power-up and initializes its duration/state.</summary>
+    /// <summary>
+    /// Activates a newly collected power-up and initializes its duration/state.
+    /// Timed buffs share one <see cref="ActivePowerUp"/> HUD slot (last pickup wins).
+    /// <see cref="ShieldCharges"/> are charge-based and are intentionally not cleared when a timed buff or bomb replaces the HUD slot, so a shield can still block floor hits while another effect is shown.
+    /// </summary>
     public void ActivatePowerUp(PowerUpType type)
     {
         ActivePowerUp = type;
@@ -412,6 +416,7 @@ public sealed class GameState
                 GameAudio.PlayShieldPickup();
                 break;
             case PowerUpType.BombShot:
+                // Fuse + playfield marker own feedback; no timed HUD card.
                 ActivePowerUp = null;
                 ActivePowerUpDurationFrames = 0;
                 PowerUpTimerFrames = 0;

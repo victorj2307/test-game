@@ -14,4 +14,12 @@
     <EmbeddedResource Remove="RetroArcade.Tests\**\*" />
     <None Remove="RetroArcade.Tests\**\*" />
   </ItemGroup>
+
+  <ItemGroup>
+    <None Include="gameconfig.json.example" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RetroArcade.Tests" />
+  </ItemGroup>
 </Project>
