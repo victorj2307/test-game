@@ -1,14 +1,15 @@
 using System.Media;
 using System.Text;
 using System.Diagnostics;
+using Game.Core;
 
 namespace Game.Audio;
 
 /// <summary>
 /// Builds short PCM sine tones in memory and plays them with <see cref="SoundPlayer"/>.
 /// A small pool of players avoids blocking the UI thread and lets one-shots overlap.
-/// Clip banks are built at type initialization; lazy <see cref="PlayTone"/> banks use <c>ClipBankLock</c> so dictionary
-/// writes and bank reads stay consistent if playback is ever invoked off the UI thread.
+/// Clip banks are built at type initialization; dense hit/shoot banks are rate-limited so
+/// Stop/Play churn does not hitch the message pump.
 /// </summary>
 public static class SoundGenerator
 {
@@ -23,6 +24,8 @@ public static class SoundGenerator
     {
         public required SoundPlayer Player { get; init; }
         public required MemoryStream Stream { get; init; }
+        /// <summary>Wall-clock tick when this slot is expected to finish (for skip-Stop).</summary>
+        public long BusyUntilTickMs;
     }
 
     /// <summary>Round-robin playback slots for one logical sound key.</summary>
@@ -30,6 +33,9 @@ public static class SoundGenerator
     {
         public required CachedPlaybackSlot[] Slots { get; init; }
         public int NextIndex;
+        public int MinIntervalMs;
+        public int ClipDurationMs;
+        public long LastPlayTickMs = long.MinValue / 2;
     }
 
     private static readonly Dictionary<string, byte[][]> SoundBank = new();
@@ -45,7 +51,6 @@ public static class SoundGenerator
     /// <summary>Ensures static warmup executes before gameplay.</summary>
     public static void Warmup()
     {
-        // Access forces static constructor completion and preload side effects.
         _ = ClipBanks.Count;
     }
 
@@ -97,12 +102,17 @@ public static class SoundGenerator
     public static void PlayPierceHitSound() =>
         PlayFromBank("pierce");
 
+    /// <summary>Low boom for bomb detonation (separate from hit bank).</summary>
+    public static void PlayBombSound() =>
+        PlayFromBank("bomb");
+
     /// <summary>Builds raw PCM variant arrays for each gameplay SFX key.</summary>
     private static void WarmupBank()
     {
-        int variants = Game.Core.GameRuntimeConfig.Current.AudioVariantCount;
+        int variants = GameRuntimeConfig.Current.AudioVariantCount;
         SoundBank["shoot"] = BuildVariants(1000, 1400, 45, 60, variants);
         SoundBank["hit"] = BuildVariants(600, 900, 65, 100, variants);
+        SoundBank["bomb"] = BuildVariants(90, 160, 180, 280, Math.Max(2, variants / 2));
         SoundBank["gameover"] = BuildVariants(150, 300, 220, 400, Math.Max(2, variants / 2));
         SoundBank["lifelost"] = BuildVariants(280, 420, 140, 200, Math.Max(2, variants / 2));
         SoundBank["shield_pickup_low"] = BuildVariants(520, 560, 42, 52, Math.Max(2, variants / 2));
@@ -116,16 +126,39 @@ public static class SoundGenerator
     {
         lock (ClipBankLock)
         {
-        foreach (var (key, variants) in SoundBank)
-            ClipBanks[key] = BuildCachedClipBank(variants);
+            foreach (var (key, variants) in SoundBank)
+                ClipBanks[key] = BuildCachedClipBank(variants, MinIntervalForKey(key), DurationHintForKey(key));
         }
     }
 
+    private static int MinIntervalForKey(string key) => key switch
+    {
+        "hit" => GameConfig.Audio.HitMinIntervalMs,
+        "pierce" => GameConfig.Audio.PierceMinIntervalMs,
+        "shoot" => GameConfig.Audio.ShootMinIntervalMs,
+        "bomb" => GameConfig.Audio.BombMinIntervalMs,
+        _ => GameConfig.Audio.DefaultMinIntervalMs
+    };
+
+    private static int DurationHintForKey(string key) => key switch
+    {
+        "shoot" => 60,
+        "hit" => 100,
+        "pierce" => 58,
+        "bomb" => 280,
+        "gameover" => 400,
+        "lifelost" => 200,
+        "shield_pickup_low" => 52,
+        "shield_pickup_high" => 62,
+        "shield_block" => 95,
+        _ => 80
+    };
+
     /// <summary>Creates and preloads round-robin players for one clip variant set.</summary>
-    private static CachedClipBank BuildCachedClipBank(byte[][] variants)
+    private static CachedClipBank BuildCachedClipBank(byte[][] variants, int minIntervalMs, int clipDurationMs)
     {
         if (variants.Length == 0)
-            return new CachedClipBank { Slots = [] };
+            return new CachedClipBank { Slots = [], MinIntervalMs = minIntervalMs, ClipDurationMs = clipDurationMs };
 
         int slotCount = Math.Max(2, Math.Min(PoolSize, variants.Length * 2));
         var slots = new CachedPlaybackSlot[slotCount];
@@ -154,7 +187,12 @@ public static class SoundGenerator
             };
         }
 
-        return new CachedClipBank { Slots = slots };
+        return new CachedClipBank
+        {
+            Slots = slots,
+            MinIntervalMs = minIntervalMs,
+            ClipDurationMs = clipDurationMs
+        };
     }
 
     /// <summary>Lazy-builds a one-key tone bank for ad-hoc <see cref="PlayTone"/> calls.</summary>
@@ -163,7 +201,7 @@ public static class SoundGenerator
         try
         {
             using MemoryStream wav = BuildWavSine(frequencyHz, durationMs);
-            ClipBanks[key] = BuildCachedClipBank([wav.ToArray()]);
+            ClipBanks[key] = BuildCachedClipBank([wav.ToArray()], GameConfig.Audio.DefaultMinIntervalMs, durationMs);
         }
         catch (OutOfMemoryException ex)
         {
@@ -200,15 +238,35 @@ public static class SoundGenerator
             if (!ClipBanks.TryGetValue(key, out bank) || bank.Slots.Length == 0)
                 return;
         }
-        // Round-robin keeps rapid one-shots from cutting each other off immediately.
-        int slotIndex = Interlocked.Increment(ref bank.NextIndex);
-        if (slotIndex < 0) slotIndex = -slotIndex;
-        CachedPlaybackSlot slot = bank.Slots[slotIndex % bank.Slots.Length];
+
+        long now = Environment.TickCount64;
+        if (bank.MinIntervalMs > 0 && now - bank.LastPlayTickMs < bank.MinIntervalMs)
+            return;
+
+        // Prefer an idle slot (past BusyUntil) before forcing Stop on a busy one.
+        CachedPlaybackSlot? idle = null;
+        for (int probe = 0; probe < bank.Slots.Length; probe++)
+        {
+            int idx = (bank.NextIndex + probe) % bank.Slots.Length;
+            if (idx < 0) idx = -idx;
+            CachedPlaybackSlot candidate = bank.Slots[idx % bank.Slots.Length];
+            if (now >= candidate.BusyUntilTickMs)
+            {
+                idle = candidate;
+                bank.NextIndex = idx + 1;
+                break;
+            }
+        }
+
+        CachedPlaybackSlot slot = idle ?? bank.Slots[(Interlocked.Increment(ref bank.NextIndex) & int.MaxValue) % bank.Slots.Length];
         try
         {
-            slot.Player.Stop();
+            if (now < slot.BusyUntilTickMs)
+                slot.Player.Stop();
             slot.Stream.Position = 0;
             slot.Player.Play();
+            slot.BusyUntilTickMs = now + bank.ClipDurationMs;
+            bank.LastPlayTickMs = now;
         }
         catch (InvalidOperationException ex)
         {

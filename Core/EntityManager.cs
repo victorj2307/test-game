@@ -11,6 +11,7 @@ public sealed class EntityManager
     public List<Fragment> Fragments { get; } = new();
     public List<PowerUp> PowerUps { get; } = new();
     public List<ExplosionFx> Explosions { get; } = new();
+    public List<ScorePopup> ScorePopups { get; } = new();
 
     /// <summary>Clears all active world entities.</summary>
     public void Clear()
@@ -21,6 +22,42 @@ public sealed class EntityManager
         Fragments.Clear();
         PowerUps.Clear();
         Explosions.Clear();
+        ScorePopups.Clear();
+    }
+
+    /// <summary>Evicts oldest particles so <paramref name="incoming"/> can be added under the global cap.</summary>
+    public void EnsureParticleCapacity(int incoming)
+    {
+        int overflow = Particles.Count + incoming - GameConfig.Effects.MaxActiveParticles;
+        if (overflow <= 0) return;
+        EvictFromEnd(Particles, overflow);
+    }
+
+    /// <summary>Evicts oldest fragments so <paramref name="incoming"/> can be added under the global cap.</summary>
+    public void EnsureFragmentCapacity(int incoming)
+    {
+        int overflow = Fragments.Count + incoming - GameConfig.Effects.MaxActiveFragments;
+        if (overflow <= 0) return;
+        EvictFromEnd(Fragments, overflow);
+    }
+
+    /// <summary>Evicts oldest score popups so <paramref name="incoming"/> can be added under the global cap.</summary>
+    public void EnsureScorePopupCapacity(int incoming = 1)
+    {
+        int overflow = ScorePopups.Count + incoming - GameConfig.Effects.MaxActiveScorePopups;
+        if (overflow <= 0) return;
+        EvictFromEnd(ScorePopups, overflow);
+    }
+
+    /// <summary>
+    /// Drops the newest <paramref name="count"/> entries from the end (cheap truncate; avoids mid-list shifts).
+    /// FX order does not matter for gameplay fairness under pressure.
+    /// </summary>
+    private static void EvictFromEnd<T>(List<T> list, int count)
+    {
+        count = Math.Min(count, list.Count);
+        if (count <= 0) return;
+        list.RemoveRange(list.Count - count, count);
     }
 
     /// <summary>Updates bullets and removes ones that leave the top of the playfield.</summary>
@@ -43,23 +80,33 @@ public sealed class EntityManager
         }
     }
 
-    /// <summary>Advances and cleans up simple spark particles.</summary>
+    /// <summary>Advances and cleans up simple spark particles (swap-remove dead entries).</summary>
     public void UpdateParticles(float deltaSeconds)
     {
         for (int i = Particles.Count - 1; i >= 0; i--)
         {
             Particles[i].Update(deltaSeconds);
-            if (Particles[i].IsDead) Particles.RemoveAt(i);
+            if (Particles[i].IsDead) SwapRemoveAt(Particles, i);
         }
     }
 
-    /// <summary>Advances and cleans up rectangular debris fragments.</summary>
+    /// <summary>Advances and cleans up rectangular debris fragments (swap-remove dead entries).</summary>
     public void UpdateFragments(float deltaSeconds)
     {
         for (int i = Fragments.Count - 1; i >= 0; i--)
         {
             Fragments[i].Update(deltaSeconds);
-            if (Fragments[i].IsDead) Fragments.RemoveAt(i);
+            if (Fragments[i].IsDead) SwapRemoveAt(Fragments, i);
+        }
+    }
+
+    /// <summary>Advances and cleans up floating score popups (swap-remove dead entries).</summary>
+    public void UpdateScorePopups(float deltaSeconds)
+    {
+        for (int i = ScorePopups.Count - 1; i >= 0; i--)
+        {
+            ScorePopups[i].Update(deltaSeconds);
+            if (ScorePopups[i].IsDead) SwapRemoveAt(ScorePopups, i);
         }
     }
 
@@ -82,5 +129,14 @@ public sealed class EntityManager
             b.Move(deltaSeconds);
             b.TickEffect(deltaSeconds);
         }
+    }
+
+    /// <summary>O(1) unordered remove used for short-lived FX lists (order does not matter).</summary>
+    private static void SwapRemoveAt<T>(List<T> list, int index)
+    {
+        int last = list.Count - 1;
+        if (index < last)
+            list[index] = list[last];
+        list.RemoveAt(last);
     }
 }

@@ -38,7 +38,7 @@ public static class GameConfig
     {
         public const int Width = 48; // Player ship width in pixels.
         public const int Height = 18; // Player ship height in pixels.
-        public const int MuzzlePortWidth = 8; // Decorative muzzle-port width used by rendering.
+        public const int MuzzlePortWidth = 10; // Decorative muzzle-port width (matches thicker barrel top).
         public const int MuzzlePortYOffset = 2; // How far above player top the muzzle port is drawn.
         public const int MuzzlePortHeight = 2; // Decorative muzzle-port thickness in pixels.
         public const int FireCooldownMs = 100; // Base time between shots before power-up/difficulty modifiers.
@@ -72,6 +72,16 @@ public static class GameConfig
         public const int MinBarHeightClamp = 20; // Safety minimum clamp for bar height.
         public const int MaxBarHeightClamp = 300; // Safety maximum clamp for bar height.
         public const int InitialSpawnIntervalFrames = 90; // Base spawn interval before difficulty interpolation.
+        /// <summary>Fraction of traverse budget used for reachable half-width (0.6 = player must keep spare time to shoot).</summary>
+        public const float ReachabilitySafetyFactor = 0.6f;
+        /// <summary>Minimum reachable half-width in pixels so early game is not pinned to the player.</summary>
+        public const int ReachabilityMinHalfWidth = 96;
+        /// <summary>Maximum reachable half-width so pressure mode stays tighter than full screen width.</summary>
+        public const int ReachabilityMaxHalfWidth = 168;
+        /// <summary>Estimated fall distance (playfield + spawn headroom) used for reachability time budget.</summary>
+        public const int ReachabilityFallDistancePx = 700;
+        /// <summary>When bars on screen are at least (cap - this), new spawns must land inside the player reach band.</summary>
+        public const int ReachabilityPressureSlotsFromCap = 1;
     }
 
     /// <summary>
@@ -109,7 +119,7 @@ public static class GameConfig
         public const int ForceDropAfterBars = 12; // Guarantees a drop after this many misses (normal mode).
         public const double DevDropChance = 0.55; // Elevated drop probability used in dev mode.
         public const int DevForceDropAfterBars = 3; // Faster force-drop cadence used in dev mode.
-        public const int DropSize = 12; // Power-up pickup circle size.
+        public const int DropSize = 16; // Power-up pickup circle size (room for a small type glyph).
         public const int DropFallSpeed = 2; // Falling speed of dropped power-ups.
         public const int DropYDivisor = 3; // Vertical offset divisor from source bar for initial power-up Y.
         public const int OffscreenCullPadding = 20; // Extra bottom margin before culling dropped power-ups.
@@ -155,17 +165,17 @@ public static class GameConfig
         public static readonly DifficultyEntry[] Table =
         [
             new(0f,   0.85f, 90f, 3.0f), // Opening pace.
-            new(30f,  0.98f, 85f, 3.3f), // Gentle early ramp to preserve onboarding control.
-            new(60f,  1.12f, 79f, 3.8f),
-            new(90f,  1.30f, 73f, 4.2f),
-            new(120f, 1.48f, 68f, 4.6f), // Mid-game tuned to avoid stacked spikes.
-            new(150f, 1.64f, 63f, 5.0f),
-            new(180f, 1.78f, 59f, 5.4f),
-            new(210f, 1.92f, 55f, 5.8f),
-            new(240f, 2.04f, 52f, 6.1f),
-            new(270f, 2.14f, 49f, 6.4f),
-            new(300f, 2.22f, 47f, 6.6f),
-            new(330f, 2.28f, 46f, 6.7f)  // Late-game challenge plateau: hard but stable.
+            new(30f,  0.95f, 87f, 3.2f), // Gentler early ramp.
+            new(60f,  1.05f, 83f, 3.5f),
+            new(90f,  1.18f, 79f, 3.8f),
+            new(120f, 1.32f, 74f, 4.15f), // MaxBars~4 before speed int step.
+            new(150f, 1.42f, 70f, 4.4f),
+            new(180f, 1.55f, 66f, 4.7f),
+            new(210f, 1.72f, 62f, 5.0f), // BarSpeed int 2 after MaxBars 5 settled.
+            new(240f, 1.88f, 58f, 5.35f),
+            new(270f, 2.00f, 54f, 5.7f),
+            new(300f, 2.10f, 51f, 6.1f),
+            new(330f, 2.18f, 48f, 6.4f)  // Late plateau: hard but stable.
         ];
 
         public readonly record struct DifficultyEntry(
@@ -187,7 +197,11 @@ public static class GameConfig
         public const float BombKillFraction = 0.72f; // Fraction of ranked bars selected for staged bomb kills.
         public const int BombKillDelayStartFrames = 2; // Initial delay before first queued bomb kill.
         public const int BombKillStaggerFrames = 3; // Frame spacing between queued bomb kills.
-        public const int MaxActiveFragments = 320; // Global cap for active fragments to protect performance.
+        public const int MaxActiveFragments = 180; // Global cap for active fragments to protect performance.
+        public const int MaxActiveParticles = 160; // Global cap for spark particles (hits, bombs, final death).
+        public const int MaxActiveScorePopups = 16; // Cap floating "+N" popups so bomb waves do not spam GDI text.
+        public const int BombExplosionParticleCount = 12; // Fewer, larger sparks for bomb center burst.
+        public const int ImpactFlashFrames = 3; // Brief contact flash at hit point.
         public const int BombExplosionShakeMs = 320; // Base shake duration on bomb detonation.
         public const int BombScreenFlashFrames = 14; // Bomb full-screen flash duration.
         public const int BombHeavyShakeFrames = 22; // Heavy bomb shake frame duration.
@@ -203,9 +217,9 @@ public static class GameConfig
         /// <summary>Short shake while the final-death animation plays.</summary>
         public const int FinalDeathShakeMs = 220;
         /// <summary>Rectangular debris count for last-life cannon detonation (grid + radial + sparks).</summary>
-        public const int CannonDestructionFragmentCount = 40;
+        public const int CannonDestructionFragmentCount = 28;
         /// <summary>Omnidirectional spark particles at cannon center for last-life burst.</summary>
-        public const int CannonDestructionParticleCount = 52;
+        public const int CannonDestructionParticleCount = 36;
         /// <summary>Hull-shard outward speed range (pixels/frame at 60 FPS baseline).</summary>
         public const float CannonDestructionChunkSpeedMin = 6.5f;
         public const float CannonDestructionChunkSpeedMax = 14.5f;
@@ -215,6 +229,8 @@ public static class GameConfig
         /// <summary>Gravity for cannon-breakup fragments (slightly floaty).</summary>
         public const float CannonDestructionFragmentGravity = 0.17f;
         public const int DestroyShakeMs = 120; // Shake pulse duration on bar destroy.
+        public const int ScorePopupLifetimeFrames = 42; // Floating "+N" lifetime after a destroy.
+        public const float ScorePopupRiseSpeed = 0.85f; // Pixels per frame the score popup rises.
         public const int SpawnRelaxAfterLifeLostFrames = 6; // Spawn interval relief applied after losing a life.
         public const int LifeLostFlashFrames = 18; // Life-lost overlay flash duration.
         public const int NewBestFlashFrames = 150; // "New best" banner lifetime.
@@ -255,7 +271,19 @@ public static class GameConfig
         public const int GameTimerIntervalMs = 16; // Timer interval targeting ~60 updates per second.
         public const int MinPlayHeight = 32; // Minimum allowed gameplay viewport height.
         public const float MinDeltaSeconds = 1f / 500f; // Lower clamp for frame delta to avoid tiny-step instability.
-        public const float MaxDeltaSeconds = 0.25f; // Upper clamp for frame delta to avoid huge-step spikes.
+        public const float MaxDeltaSeconds = 0.05f; // ~3 frames at 60 Hz; avoids huge catch-up after a hitch.
         public const int FpsWindowMs = 1000; // Rolling window size for FPS counter updates.
+    }
+
+    /// <summary>
+    /// One-shot SFX pacing so dense hits do not stall the UI thread on SoundPlayer Stop/Play.
+    /// </summary>
+    public static class Audio
+    {
+        public const int HitMinIntervalMs = 32; // Minimum gap between standard hit cues.
+        public const int PierceMinIntervalMs = 30; // Minimum gap between pierce zip cues.
+        public const int ShootMinIntervalMs = 28; // Soft floor under rapid-fire (fire cooldown already paces shots).
+        public const int BombMinIntervalMs = 80; // Dedicated bomb boom; does not share hit rate limit.
+        public const int DefaultMinIntervalMs = 0; // Banks without a specific rate limit (game over, life lost, shield).
     }
 }

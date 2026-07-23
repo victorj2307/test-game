@@ -60,7 +60,7 @@ public sealed class Bar
             return Math.Max(GameConfig.PowerUps.SlowMotionMinPixelsPerFrame, raw);
         }
 
-        return Math.Max(1f, (int)(globalSpeed * _speedScale + 0.5f));
+        return Math.Max(1f, globalSpeed * _speedScale);
     }
 
     public void TickSpeedTowardTarget(float deltaSeconds, float lerpFactor = -1f)

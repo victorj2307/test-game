@@ -8,22 +8,20 @@ namespace Game.Rendering;
 /// <summary>
 /// All GDI+ drawing for the playfield: world, HUD, overlays, debug.
 /// Hot paths reuse <see cref="Pen"/>, <see cref="SolidBrush"/>, and <see cref="Font"/> via static LRU-bounded caches
-/// (evicted entries are disposed). Call <see cref="DisposeSharedResources"/> on application shutdown
-/// (see <see cref="Game.Core.GameManager.DisposeResources"/>) to release remaining cached handles and the sky gradient brush.
+/// (evicted entries are disposed). The synthwave backdrop is cached to a <see cref="Bitmap"/> and rebuilt only on resize.
+/// Call <see cref="DisposeSharedResources"/> on application shutdown
+/// (see <see cref="Game.Core.GameManager.DisposeResources"/>) to release remaining cached handles and the backdrop bitmap.
 /// </summary>
 public sealed class RenderSystem
 {
     private static readonly Brush MuzzlePortBrush = new SolidBrush(Color.FromArgb(255, 220, 190, 90));
-    private static readonly SolidBrush CannonSilhouetteGlowBrush = new(Color.FromArgb(48, 0, 200, 255));
-    private static readonly SolidBrush CannonBaseBrush = new(Color.FromArgb(255, 8, 18, 42));
-    private static readonly SolidBrush CannonMidBrush = new(Color.FromArgb(255, 12, 34, 56));
-    private static readonly SolidBrush CannonBarrelBrush = new(Color.FromArgb(255, 14, 40, 62));
-    private static readonly SolidBrush CannonBarrelTipGlowBrush = new(Color.FromArgb(90, 0, 255, 240));
-    private static readonly SolidBrush CannonBarrelTipBrush = new(Color.FromArgb(255, 120, 255, 245));
-    private static readonly SolidBrush CannonCoreGlowBrush = new(Color.FromArgb(110, 255, 170, 40));
-    private static readonly SolidBrush CannonCoreSolidBrush = new(Color.FromArgb(255, 255, 215, 70));
-    private static readonly SolidBrush CannonCoreFlashBrush = new(Color.FromArgb(255, 255, 255, 220));
-    private static readonly Pen CannonNeonPen = new(Color.FromArgb(255, 48, 255, 230), 1.5f) { LineJoin = LineJoin.Round };
+    // Readable ground turret: hull + barrel fills, one silhouette outline (no nested neon boxes / silhouette glow).
+    private static readonly SolidBrush CannonHullBrush = new(Color.FromArgb(255, 16, 38, 62));
+    private static readonly SolidBrush CannonHullLipBrush = new(Color.FromArgb(255, 6, 14, 32));
+    private static readonly SolidBrush CannonBarrelBrush = new(Color.FromArgb(255, 28, 72, 98));
+    private static readonly SolidBrush CannonPanelBrush = new(Color.FromArgb(255, 255, 215, 70));
+    private static readonly SolidBrush CannonPanelFlashBrush = new(Color.FromArgb(255, 255, 255, 220));
+    private static readonly Pen CannonOutlinePen = new(Color.FromArgb(220, 40, 210, 220), 1.25f) { LineJoin = LineJoin.Miter };
     private static readonly SolidBrush BulletOuterGlowBrush = new(Color.FromArgb(70, 255, 230, 60));
     private static readonly SolidBrush BulletCoreBrush = new(Color.FromArgb(255, 255, 252, 120));
     private static readonly SolidBrush BulletTrailNearBrush = new(Color.FromArgb(50, 255, 240, 140));
@@ -34,7 +32,8 @@ public sealed class RenderSystem
     private static readonly Brush PierceBulletCore = new SolidBrush(Color.FromArgb(255, 255, 210, 255));
     private static readonly Brush PierceBulletGlow = new SolidBrush(Color.FromArgb(140, 210, 70, 255));
     private static readonly Brush TextBrush = Brushes.White;
-    private static readonly Brush SubtleTextBrush = new SolidBrush(Color.Silver);
+    private static readonly Brush SubtleTextBrush = new SolidBrush(Color.FromArgb(235, 236, 245));
+    private static readonly Brush AttractHintBrush = new SolidBrush(Color.FromArgb(245, 248, 255));
     private static readonly Brush GoBrush = new SolidBrush(Color.OrangeRed);
     private static readonly Pen DebugPenPlayer = new(Color.Lime) { Width = 1.5f };
     private static readonly Pen DebugPenEnemy = new(Color.Magenta) { Width = 1f };
@@ -48,24 +47,49 @@ public sealed class RenderSystem
     private static readonly SolidBrush PowerUpBrush = new(Color.White);
     private static readonly SolidBrush FragmentBrush = new(Color.White);
     private static readonly Pen BulletAimPen = new(Color.FromArgb(255, 210, 160, 90), 2.25f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+    // Mutable pens for animated FX — avoid per-frame alpha cache keys / GDI create+dispose churn.
+    private static readonly Pen ExplosionOuterPen = new(Color.FromArgb(100, 255, 55, 30), 5.5f) { LineJoin = LineJoin.Round };
+    private static readonly Pen ExplosionMidPen = new(Color.FromArgb(180, 255, 150, 45), 4f);
+    private static readonly Pen ExplosionCorePen = new(Color.FromArgb(220, 255, 255, 230), 3f);
+    private static readonly SolidBrush ExplosionCoreFillBrush = new(Color.FromArgb(160, 255, 200, 80));
+    private static readonly SolidBrush ImpactFlashBrush = new(Color.FromArgb(230, 255, 255, 220));
+    private static readonly Pen ShieldGlowPen = new(Color.FromArgb(40, 110, 90, 220), 1.5f) { LineJoin = LineJoin.Round };
+    private static readonly Pen ShieldEdgePen = new(Color.FromArgb(210, 190, 170, 255), 1.9f) { LineJoin = LineJoin.Round };
+    private static readonly Pen ShieldBlockOuterPen = new(Color.FromArgb(200, 170, 140, 255), 3.1f) { LineJoin = LineJoin.Round };
+    private static readonly Pen ShieldBlockInnerPen = new(Color.FromArgb(220, 230, 220, 255), 1.7f);
+    private static readonly Pen BombFuseRimPen = new(Color.FromArgb(255, 255, 100, 30), 2.5f) { LineJoin = LineJoin.Round };
+    private static readonly Pen BombFuseWarnPen = new(Color.FromArgb(200, 255, 60, 40), 1.5f) { DashStyle = DashStyle.Dash };
+    private static readonly SolidBrush ScorePopupBrush = new(Color.FromArgb(255, 255, 230, 120));
     // GDI resource caches reduce repeated allocations in hot draw paths.
-    private static readonly Dictionary<string, Font> FontCache = new();
-    private static readonly LinkedList<string> FontLru = new();
-    private static readonly Dictionary<string, LinkedListNode<string>> FontNodes = new();
+    private static readonly Dictionary<long, Font> FontCache = new();
+    private static readonly LinkedList<long> FontLru = new();
+    private static readonly Dictionary<long, LinkedListNode<long>> FontNodes = new();
     private static readonly Dictionary<int, SolidBrush> BrushCache = new();
     private static readonly LinkedList<int> BrushLru = new();
     private static readonly Dictionary<int, LinkedListNode<int>> BrushNodes = new();
-    private static readonly Dictionary<string, Pen> PenCache = new();
-    private static readonly LinkedList<string> PenLru = new();
-    private static readonly Dictionary<string, LinkedListNode<string>> PenNodes = new();
+    private static readonly Dictionary<long, Pen> PenCache = new();
+    private static readonly LinkedList<long> PenLru = new();
+    private static readonly Dictionary<long, LinkedListNode<long>> PenNodes = new();
     private const int MaxFontCacheEntries = 96;
     private const int MaxBrushCacheEntries = 192;
     private const int MaxPenCacheEntries = 256;
-    // Sky gradient is size-dependent, so keep one cached brush per current viewport dimensions.
-    private static LinearGradientBrush? CachedSkyBrush;
-    private static int CachedSkyWidth = -1;
-    private static int CachedSkyHeight = -1;
-    /// <summary>Shared color stops reused whenever the cached sky brush is rebuilt.</summary>
+
+    // HUD text caches — rebuild only when values change (avoids ToString/MeasureString every paint).
+    private static int _hudScoreCached = int.MinValue;
+    private static string _hudScoreText = "0";
+    private static float _hudScoreWidth;
+    private static int _hudBestCached = int.MinValue;
+    private static string _hudBestText = "BEST 0";
+    private static float _hudBestWidth;
+    private static int _hudComboMultCached = int.MinValue;
+    private static bool _hudComboHotCached;
+    private static string _hudComboText = "COMBO x1";
+    private static float _hudComboWidth;
+    // Synthwave backdrop is size-dependent; rebuild only when the playfield dimensions change.
+    private static Bitmap? CachedBackgroundBitmap;
+    private static int CachedBgWidth = -1;
+    private static int CachedBgHeight = -1;
+    /// <summary>Shared color stops reused whenever the cached sky brush is rebuilt into the backdrop bitmap.</summary>
     private static readonly ColorBlend SkyGradientBlend = new(4)
     {
         Positions = [0f, 0.34f, 0.64f, 1f],
@@ -101,10 +125,13 @@ public sealed class RenderSystem
         Player player,
         IReadOnlyList<HighScoreStore.LeaderboardEntry> leaderboard,
         bool showDebug,
-        int debugFps)
+        int debugFps,
+        string? leaderboardHighlightName = null)
     {
-        g.SmoothingMode = SmoothingMode.AntiAlias;
+        // World / FX: no AA — GDI+ AntiAlias dominates frame cost when particles/fragments are dense.
+        g.SmoothingMode = SmoothingMode.None;
         g.CompositingQuality = CompositingQuality.HighSpeed;
+        g.PixelOffsetMode = PixelOffsetMode.HighSpeed;
 
         long now = Environment.TickCount64;
         float ox = 0, oy = 0;
@@ -123,8 +150,9 @@ public sealed class RenderSystem
         else if (now < state.ShakeUntilTickMs)
         {
             int phase = (int)(now / 20 % 4);
-            ox = phase switch { 0 => 1f, 2 => -1f, _ => 0f };
-            oy = phase switch { 1 => 1f, 3 => -1f, _ => 0f };
+            // ~2–2.5 px destroy shake (bomb heavy path stays stronger above).
+            ox = phase switch { 0 => 2.2f, 2 => -2.2f, _ => 0f };
+            oy = phase switch { 1 => 2f, 3 => -2f, _ => 0f };
         }
         var graphicsState = g.Save();
         g.TranslateTransform(ox, oy);
@@ -167,7 +195,8 @@ public sealed class RenderSystem
         foreach (var p in entities.Particles)
         {
             _particleBrush.Color = p.Color;
-            g.FillRectangle(_particleBrush, p.X, p.Y, 2, 2);
+            int s = p.Size;
+            g.FillRectangle(_particleBrush, p.X - s * 0.5f, p.Y - s * 0.5f, s, s);
         }
         DrawFragments(g, entities.Fragments);
 
@@ -176,7 +205,13 @@ public sealed class RenderSystem
         if (state.HasPendingBombPickup)
             DrawBombFuseIndicator(g, state);
 
+        // Brief AA only for curved explosion/shield rings; particles stay None.
+        g.SmoothingMode = SmoothingMode.AntiAlias;
         DrawExplosionRings(g, entities.Explosions);
+        g.SmoothingMode = SmoothingMode.None;
+
+        DrawImpactFlash(g, state);
+        DrawScorePopups(g, uiFont, entities.ScorePopups);
 
         foreach (var bullet in entities.Bullets)
             DrawBulletTrails(g, bullet);
@@ -185,28 +220,59 @@ public sealed class RenderSystem
 
         if (!state.IsFinalDeathAnimating)
         {
+            // Shield under the cannon: status FX stays ambient; turret remains the focal object.
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            DrawShieldPlayerFx(g, player, state, clientWidth, playHeight);
+
             int recoilDy = state.MuzzleFlashFrames > 0 ? (state.MuzzleFlashFrames >= 2 ? 2 : 1) : 0;
             GraphicsState cannonState = g.Save();
             // Negative Y: brief kick upward (weapon silhouette jumps toward muzzle).
             g.TranslateTransform(0, -recoilDy);
             DrawPlayerCannon(g, player, state);
-            DrawShieldPlayerFx(g, player, state);
             g.Restore(cannonState);
         }
 
+        // HUD / overlays: AntiAlias for readable text and curved power-up glyphs.
+        g.SmoothingMode = SmoothingMode.AntiAlias;
         if (state.ShowLeaderboard)
         {
             g.FillRectangle(GetCachedBrush(Color.FromArgb(220, 0, 0, 0)), 0, 0, clientWidth, playHeight);
             float statsBottom = DrawFinalResultsPanel(g, uiFont, state, clientWidth, playHeight);
             float gameOverBottom = DrawGameOverTitle(g, uiFont, clientWidth, statsBottom + 10f);
-            float leaderboardBottom = DrawLeaderboard(g, uiFont, leaderboard, clientWidth, playHeight, state.Score, gameOverBottom + 14f);
-            const string hint = "Click Start to play again";
-            var hintBr = GetCachedBrush(Color.FromArgb(220, 220, 225));
-            DrawCenteredText(g, hint, uiFont, hintBr, clientWidth, leaderboardBottom + 14f);
+            float leaderboardBottom = DrawLeaderboard(
+                g,
+                uiFont,
+                leaderboard,
+                clientWidth,
+                playHeight,
+                state.Score,
+                gameOverBottom + 14f,
+                leaderboardHighlightName);
+            DrawOverlayActionHint(g, uiFont, clientWidth, playHeight, leaderboardBottom, "Enter: Play again · Menu: title");
+        }
+        else if (state.IsBrowsingLeaderboard)
+        {
+            DrawAttractHud(g, uiFont, clientWidth, state);
+            g.FillRectangle(GetCachedBrush(Color.FromArgb(200, 0, 0, 0)), 0, 0, clientWidth, playHeight);
+            float boardBottom = DrawLeaderboard(
+                g,
+                uiFont,
+                leaderboard,
+                clientWidth,
+                playHeight,
+                currentScore: 0,
+                minTopY: Math.Max(28f, playHeight * 0.08f),
+                highlightName: null);
+            DrawOverlayActionHint(g, uiFont, clientWidth, playHeight, boardBottom, "Esc or click Back");
         }
         else
         {
-            DrawHud(g, uiFont, clientWidth, state);
+            bool attract = !state.IsPlaying && !state.IsGameOver;
+            if (attract)
+                DrawAttractHud(g, uiFont, clientWidth, state);
+            else
+                DrawHud(g, uiFont, clientWidth, state);
+
             DrawNewBestBanner(g, uiFont, clientWidth, state);
             if (state.IsDevMode && state.IsPlaying && !state.IsGameOver && !state.IsFinalDeathAnimating)
                 DrawDevModeOverlay(g, uiFont, clientWidth, playHeight, state);
@@ -229,6 +295,7 @@ public sealed class RenderSystem
 
             if (state.IsGameOver)
             {
+                // Fallback if ShowLeaderboard is false; keep copy in sync with the live path.
                 g.FillRectangle(GetCachedBrush(Color.FromArgb(220, 0, 0, 0)), 0, 0, clientWidth, playHeight);
                 var goFont = GetCachedFont(uiFont, uiFont.Size + 20f, FontStyle.Bold);
                 float cy = playHeight * 0.28f;
@@ -238,8 +305,8 @@ public sealed class RenderSystem
                 DrawCenteredText(g, $"Final Score: {state.Score}", statFont, statBrush, clientWidth, cy + 64f);
                 DrawCenteredText(g, $"Best Score:  {state.HighScore}", statFont, statBrush, clientWidth, cy + 96f);
                 DrawCenteredText(g, $"Max Combo:  x{Math.Max(1, state.MaxCombo)}", statFont, statBrush, clientWidth, cy + 128f);
-                const string hint = "Click Start to play again";
-                var hintBr = GetCachedBrush(Color.FromArgb(220, 220, 225));
+                const string hint = "Enter: Play again · Menu: title screen";
+                var hintBr = GetCachedBrush(Color.FromArgb(230, 230, 238));
                 DrawCenteredText(g, hint, uiFont, hintBr, clientWidth, cy + 176f);
             }
             else if (state.IsLifeLost)
@@ -255,7 +322,7 @@ public sealed class RenderSystem
                 DrawLifeIcons(g, 0.5f * (clientWidth - (state.MaxLives * 18 + Math.Max(0, state.MaxLives - 1) * 8)), cy + sz.Height + 14, state.MaxLives, 16, state.Lives);
 
                 const string hint = "Press Enter/Space or click Continue";
-                var hintBr = GetCachedBrush(Color.FromArgb(220, 220, 225));
+                var hintBr = GetCachedBrush(Color.FromArgb(230, 230, 238));
                 float hintW = g.MeasureString(hint, uiFont).Width;
                 g.DrawString(hint, uiFont, hintBr, (clientWidth - hintW) * 0.5f, cy + sz.Height + 44f);
             }
@@ -265,27 +332,22 @@ public sealed class RenderSystem
                 g.FillRectangle(overlay, 0, 0, clientWidth, playHeight);
                 var pausedFont = GetCachedFont(uiFont, uiFont.Size + 18f, FontStyle.Bold);
                 var hintFont = GetCachedFont(uiFont, uiFont.Size + 1f, FontStyle.Regular);
-                var hintBr = GetCachedBrush(Color.FromArgb(220, 220, 225));
+                var hintBr = GetCachedBrush(Color.FromArgb(230, 230, 238));
                 float cy = playHeight * 0.34f;
                 DrawCenteredText(g, "PAUSED", pausedFont, TextBrush, clientWidth, cy);
                 DrawCenteredText(g, "Press ESC to continue", hintFont, hintBr, clientWidth, cy + 56f);
             }
-            else if (!state.IsPlaying)
+            else if (attract)
             {
-                var title = GetCachedFont(uiFont, 22f, FontStyle.Bold);
-                const string t = "READY?";
-                SizeF tsz = g.MeasureString(t, title);
-                g.DrawString(t, title, TextBrush, (clientWidth - tsz.Width) * 0.5f, playHeight * 0.38f);
-                const string s = "Click the Start button";
-                g.DrawString(s, uiFont, SubtleTextBrush, (clientWidth - g.MeasureString(s, uiFont).Width) * 0.5f, playHeight * 0.38f + tsz.Height + 8f);
+                DrawAttractOverlay(g, uiFont, clientWidth, playHeight);
             }
         }
-        if (showDebug && !state.ShowLeaderboard)
+        if (showDebug && !state.ShowLeaderboard && !state.IsBrowsingLeaderboard)
         {
             var dbgFont = GetCachedFont(uiFont, 7.5f, FontStyle.Regular);
             var dbgBr = GetCachedBrush(Color.FromArgb(130, 160, 170, 190));
             g.DrawString(
-                $"FPS {debugFps}  dt {state.LastDeltaSeconds * 1000f:0.#}ms  bars {entities.Bars.Count}  bul {entities.Bullets.Count}  ptcl {entities.Particles.Count}  boom {entities.Explosions.Count}  fuse {state.BombFuseFramesLeft}",
+                $"FPS {debugFps}  dt {state.LastDeltaSeconds * 1000f:0.#}ms  bars {entities.Bars.Count}  bul {entities.Bullets.Count}  ptcl {entities.Particles.Count}  frag {entities.Fragments.Count}  boom {entities.Explosions.Count}  fuse {state.BombFuseFramesLeft}",
                 dbgFont,
                 dbgBr,
                 8,
@@ -338,13 +400,11 @@ public sealed class RenderSystem
         int alpha = (int)(140 * pulse + 80);
         alpha = Math.Clamp(alpha, 70, 255);
         var core = GetCachedBrush(Color.FromArgb(alpha, 255, 220, 70));
-        var rim = GetCachedPen(Color.FromArgb(255, 255, 100, 30), 2.5f, join: LineJoin.Round);
         float r = 8f + 4f * pulse;
         g.FillEllipse(core, x - r, y - r, r * 2f, r * 2f);
-        g.DrawEllipse(rim, x - r, y - r, r * 2f, r * 2f);
+        g.DrawEllipse(BombFuseRimPen, x - r, y - r, r * 2f, r * 2f);
         float warnR = 16f;
-        var warn = GetCachedPen(Color.FromArgb(200, 255, 60, 40), 1.5f, dash: DashStyle.Dash);
-        g.DrawEllipse(warn, x - warnR, y - warnR, warnR * 2f, warnR * 2f);
+        g.DrawEllipse(BombFuseWarnPen, x - warnR, y - warnR, warnR * 2f, warnR * 2f);
     }
 
     private static void DrawBombScreenFlash(Graphics g, int clientWidth, int playHeight, GameState state)
@@ -404,84 +464,54 @@ public sealed class RenderSystem
     }
 
     /// <summary>
-    /// Composed cannon: wide base, narrower mid, thin tall barrel; energy core with two-pass glow; neon outlines.
-    /// All rectangles; brushes/pens are static. Optional idle pulse on core via glow inset; shoot flash uses <see cref="GameState.MuzzleFlashFrames"/>.
+    /// Readable ground turret inside the player AABB: wide chassis, thicker centered barrel, gold muzzle.
+    /// One T-silhouette outline (no nested neon boxes). Panel light + aim line; shoot flash uses <see cref="GameState.MuzzleFlashFrames"/>.
     /// </summary>
     private static void DrawPlayerCannon(Graphics g, Player player, GameState state)
     {
-        Rectangle hull = player.GetBounds();
-        Rectangle glowRect = Rectangle.Inflate(hull, 2, 2);
-        g.FillRectangle(CannonSilhouetteGlowBrush, glowRect);
+        Rectangle bounds = player.GetBounds();
+        int pw = bounds.Width;
+        int ph = bounds.Height;
+        int px = bounds.X;
+        int py = bounds.Y;
 
-        int pw = hull.Width;
-        int ph = hull.Height;
-        int px = hull.X;
-        int py = hull.Y;
+        // Chassis: bottom ~⅔ of the hitbox, almost full width.
+        int hullH = (ph * 2) / 3;
+        if (hullH < 8) hullH = 8;
+        if (hullH > ph - 4) hullH = ph - 4;
+        int hullW = pw - 2;
+        int hullX = px + (pw - hullW) / 2;
+        int hullY = py + ph - hullH;
 
-        // Split hull height (top → bottom): thin tall barrel, mid collar, wide base.
-        int baseH = (ph * 7 + 9) / 18;
-        if (baseH < 6) baseH = 6;
-        int barrelH = (ph * 6 + 9) / 18;
-        if (barrelH < 5) barrelH = 5;
-        int midH = ph - baseH - barrelH;
-        if (midH < 3)
-        {
-            midH = 3;
-            barrelH = ph - baseH - midH;
-            if (barrelH < 4) barrelH = 4;
-        }
-
-        int baseW = pw * 5 / 6;
-        baseW = Math.Clamp(baseW, pw - 8, pw - 2);
-        int baseX = px + (pw - baseW) / 2;
-        int baseY = py + ph - baseH;
-        var baseRect = new Rectangle(baseX, baseY, baseW, baseH);
-
-        int midW = baseW - 6;
-        midW = Math.Clamp(midW, 18, pw - 4);
-        int midX = px + (pw - midW) / 2;
-        int midY = baseY - midH;
-        var midRect = new Rectangle(midX, midY, midW, midH);
-
-        int barrelW = pw / 7;
-        barrelW = Math.Clamp(barrelW, 5, 8);
+        // Barrel: thicker (~10–12 px), centered, from hitbox top down into the hull.
+        int barrelW = Math.Clamp(pw / 4, 10, 12);
         int barrelX = px + (pw - barrelW) / 2;
-        int barrelY = midY - barrelH;
-        var barrelRect = new Rectangle(barrelX, barrelY, barrelW, barrelH);
+        int barrelY = py;
+        int barrelH = hullY - py + (hullH / 2);
+        if (barrelH < 6) barrelH = 6;
 
-        g.FillRectangle(CannonBaseBrush, baseRect);
-        g.FillRectangle(CannonMidBrush, midRect);
-        g.FillRectangle(CannonBarrelBrush, barrelRect);
+        g.FillRectangle(CannonHullBrush, hullX, hullY, hullW, hullH);
+        // Darker under-lip so the chassis reads as grounded.
+        int lipH = Math.Min(2, hullH);
+        g.FillRectangle(CannonHullLipBrush, hullX, hullY + hullH - lipH, hullW, lipH);
+        g.FillRectangle(CannonBarrelBrush, barrelX, barrelY, barrelW, barrelH);
 
-        // Energy core (centered in mid): outer soft glow, then solid core.
-        const int coreW = 6;
-        const int coreH = 4;
-        int coreX = midX + (midW - coreW) / 2;
-        int coreY = midY + (midH - coreH) / 2;
-        var coreRect = new Rectangle(coreX, coreY, coreW, coreH);
-        int pulsePad = ((state.ElapsedFrames >> 3) & 1) + 1;
-        var coreGlow = Rectangle.Inflate(coreRect, pulsePad, pulsePad);
-        g.FillRectangle(CannonCoreGlowBrush, coreGlow);
+        // Small panel light on the hull (idle gold; brighter while firing).
+        const int panelW = 5;
+        const int panelH = 3;
+        int panelX = hullX + (hullW - panelW) / 2;
+        int panelY = hullY + Math.Max(2, (hullH - panelH) / 2);
         if (state.MuzzleFlashFrames > 0)
-            g.FillRectangle(CannonCoreFlashBrush, coreRect);
+            g.FillRectangle(CannonPanelFlashBrush, panelX, panelY, panelW, panelH);
         else
-            g.FillRectangle(CannonCoreSolidBrush, coreRect);
+            g.FillRectangle(CannonPanelBrush, panelX, panelY, panelW, panelH);
 
-        // Barrel tip: two-pass glow on top rows (rectangles only).
-        var tipGlow = new Rectangle(barrelX - 1, barrelY, barrelW + 2, 3);
-        g.FillRectangle(CannonBarrelTipGlowBrush, tipGlow);
-        g.FillRectangle(CannonBarrelTipBrush, barrelX, barrelY + 1, barrelW, 2);
-
-        g.DrawRectangle(CannonNeonPen, baseRect.X, baseRect.Y, baseRect.Width - 1, baseRect.Height - 1);
-        g.DrawRectangle(CannonNeonPen, midRect.X, midRect.Y, midRect.Width - 1, midRect.Height - 1);
-        g.DrawRectangle(CannonNeonPen, barrelRect.X, barrelRect.Y, barrelRect.Width - 1, barrelRect.Height - 1);
+        DrawCannonSilhouetteOutline(g, CannonOutlinePen, hullX, hullY, hullW, hullH, barrelX, barrelY, barrelW);
 
         if (state.MuzzleFlashFrames > 0)
         {
-            var pulsePen = GetCachedPen(Color.FromArgb(255, 220, 255, 255), 2.2f, join: LineJoin.Round);
-            g.DrawRectangle(pulsePen, baseRect.X, baseRect.Y, baseRect.Width - 1, baseRect.Height - 1);
-            g.DrawRectangle(pulsePen, midRect.X, midRect.Y, midRect.Width - 1, midRect.Height - 1);
-            g.DrawRectangle(pulsePen, barrelRect.X, barrelRect.Y, barrelRect.Width - 1, barrelRect.Height - 1);
+            Pen pulsePen = GetCachedPen(Color.FromArgb(255, 220, 255, 255), 2f, join: LineJoin.Miter);
+            DrawCannonSilhouetteOutline(g, pulsePen, hullX, hullY, hullW, hullH, barrelX, barrelY, barrelW);
         }
 
         Rectangle muzzle = player.GetMuzzlePortRect();
@@ -491,13 +521,44 @@ public sealed class RenderSystem
 
         if (state.MuzzleFlashFrames > 0)
         {
-            var flash = GetCachedBrush(Color.FromArgb(235, 255, 255, 255));
+            SolidBrush flash = GetCachedBrush(Color.FromArgb(235, 255, 255, 255));
             g.FillRectangle(flash, muzzleX - 8, muzzle.Top - 12, 16, 12);
         }
     }
 
-    /// <summary>Cyan shield ring while active; pickup pulse; block burst ring + flash.</summary>
-    private static void DrawShieldPlayerFx(Graphics g, Player player, GameState state)
+    /// <summary>Outer T outline for hull+barrel (allocation-free line segments).</summary>
+    private static void DrawCannonSilhouetteOutline(
+        Graphics g,
+        Pen pen,
+        int hullX,
+        int hullY,
+        int hullW,
+        int hullH,
+        int barrelX,
+        int barrelY,
+        int barrelW)
+    {
+        int hullRight = hullX + hullW - 1;
+        int hullBottom = hullY + hullH - 1;
+        int barrelRight = barrelX + barrelW - 1;
+        int barrelTop = barrelY;
+
+        // Top of barrel, then down to hull deck, out to hull sides, around the chassis, back up the barrel.
+        g.DrawLine(pen, barrelX, barrelTop, barrelRight, barrelTop);
+        g.DrawLine(pen, barrelRight, barrelTop, barrelRight, hullY);
+        g.DrawLine(pen, barrelRight, hullY, hullRight, hullY);
+        g.DrawLine(pen, hullRight, hullY, hullRight, hullBottom);
+        g.DrawLine(pen, hullRight, hullBottom, hullX, hullBottom);
+        g.DrawLine(pen, hullX, hullBottom, hullX, hullY);
+        g.DrawLine(pen, hullX, hullY, barrelX, hullY);
+        g.DrawLine(pen, barrelX, hullY, barrelX, barrelTop);
+    }
+
+    /// <summary>
+    /// Full-width violet-lavender floor band while shield is active; pickup wash; floor-centered block ripple.
+    /// Drawn behind the cannon (world-anchored). Soft rect + thin top edge (no dome arc). Quiet idle; louder on events.
+    /// </summary>
+    private static void DrawShieldPlayerFx(Graphics g, Player player, GameState state, int clientWidth, int playHeight)
     {
         bool passive = state.HasShieldActive;
         bool pickup = state.ShieldPickupFlashFrames > 0;
@@ -505,35 +566,36 @@ public sealed class RenderSystem
         bool flash = state.ShieldBlockFlashFrames > 0;
         if (!passive && !pickup && !ring && !flash) return;
 
-        Rectangle pr = player.GetBounds();
-        float cx = pr.X + pr.Width * 0.5f;
-        float cy = pr.Y + pr.Height * 0.5f;
+        // Band sits below the danger line (~playHeight - player.Height - 28).
+        const float BandExtraPx = 18f;
+        float pulse = 0.95f + 0.05f * MathF.Sin(state.ElapsedFrames * 0.28f);
+        float bandH = (player.Height + BandExtraPx) * pulse;
+        float bandTop = playHeight - bandH;
+        if (bandTop < 0f) bandTop = 0f;
 
         if (passive)
         {
-            float pulse = 0.88f + 0.12f * MathF.Sin(state.ElapsedFrames * 0.31f);
-            float pad = 8f * pulse;
-            float w = pr.Width + pad * 2f;
-            float h = (pr.Height + pad * 2f) * 1.05f;
-            float left = cx - w * 0.5f;
-            float top = cy - h * 0.5f;
-            for (int k = 4; k >= 1; k--)
-            {
-                int alpha = 24 + k * 10;
-                var glow = GetCachedPen(Color.FromArgb(alpha, 72, 210, 255), 1.1f + k * 0.42f, join: LineJoin.Round);
-                g.DrawEllipse(glow, left - k * 0.85f, top - k * 0.55f, w + k * 1.7f, h + k * 1.1f);
-            }
-            var edge = GetCachedPen(Color.FromArgb(238, 125, 242, 255), 2.5f, join: LineJoin.Round);
-            g.DrawEllipse(edge, left, top, w, h);
+            int bandAlpha = (int)(22 + 8 * pulse);
+            SolidBrush bandFill = GetCachedBrush(Color.FromArgb(Math.Clamp(bandAlpha, 18, 36), 95, 70, 190));
+            g.FillRectangle(bandFill, 0, bandTop, clientWidth, playHeight - bandTop);
+
+            // One faint glow line above the edge — not a stack that fights the danger line.
+            ShieldGlowPen.Color = Color.FromArgb(28, 110, 90, 220);
+            ShieldGlowPen.Width = 1.2f;
+            g.DrawLine(ShieldGlowPen, 0, bandTop - 1.5f, clientWidth, bandTop - 1.5f);
+
+            ShieldEdgePen.Color = Color.FromArgb(210, 190, 170, 255);
+            ShieldEdgePen.Width = 1.6f + 0.2f * pulse;
+            g.DrawLine(ShieldEdgePen, 0, bandTop, clientWidth, bandTop);
         }
 
         if (pickup)
         {
             float intensity = Math.Clamp(state.ShieldPickupFlashFrames / 22f, 0f, 1f);
-            int a = (int)(55 + 135 * intensity);
-            var fill = GetCachedBrush(Color.FromArgb(Math.Clamp(a, 0, 200), 50, 225, 255));
-            float amp = 5f + 16f * intensity;
-            g.FillEllipse(fill, pr.X - amp, pr.Y - amp * 0.7f, pr.Width + amp * 2f, pr.Height + amp * 1.4f);
+            int a = (int)(45 + 100 * intensity);
+            SolidBrush wash = GetCachedBrush(Color.FromArgb(Math.Clamp(a, 0, 180), 130, 100, 230));
+            float amp = 4f + 10f * intensity;
+            g.FillRectangle(wash, 0, bandTop - amp, clientWidth, playHeight - (bandTop - amp));
         }
 
         if (ring)
@@ -541,21 +603,27 @@ public sealed class RenderSystem
             const int ringMax = 18;
             float progress = 1f - Math.Clamp(state.ShieldBlockRingFrames / (float)ringMax, 0f, 1f);
             float e = progress * progress * (3f - 2f * progress);
-            float radius = 14f + e * 60f;
-            int a = (int)(230 * (1f - progress * 0.75f) + 20);
-            var pen = GetCachedPen(Color.FromArgb(Math.Clamp(a, 35, 245), 150, 245, 255), 3.1f, join: LineJoin.Round);
-            g.DrawEllipse(pen, cx - radius, cy - radius, radius * 2f, radius * 2f);
-            float r2 = radius * 0.5f;
-            var inner = GetCachedPen(Color.FromArgb(Math.Clamp(a + 25, 0, 255), 255, 255, 255), 1.7f);
-            g.DrawEllipse(inner, cx - r2, cy - r2, r2 * 2f, r2 * 2f);
+            float radius = 18f + e * 90f;
+            float cx = state.ShieldBlockImpactX;
+            float cy = playHeight;
+            int a = (int)(220 * (1f - progress * 0.75f) + 20);
+            a = Math.Clamp(a, 35, 245);
+            float rx = radius * 1.55f;
+            float ry = radius * 0.42f;
+            ShieldBlockOuterPen.Color = Color.FromArgb(a, 170, 140, 255);
+            g.DrawEllipse(ShieldBlockOuterPen, cx - rx, cy - ry, rx * 2f, ry * 2f);
+            float rx2 = rx * 0.5f;
+            float ry2 = ry * 0.5f;
+            ShieldBlockInnerPen.Color = Color.FromArgb(Math.Clamp(a + 20, 0, 255), 230, 220, 255);
+            g.DrawEllipse(ShieldBlockInnerPen, cx - rx2, cy - ry2, rx2 * 2f, ry2 * 2f);
         }
 
         if (flash)
         {
             float f = Math.Clamp(state.ShieldBlockFlashFrames / 14f, 0f, 1f);
-            int a = (int)(130 * f);
-            var core = GetCachedBrush(Color.FromArgb(Math.Clamp(a, 0, 145), 200, 255, 255));
-            g.FillEllipse(core, pr.X - 4, pr.Y - 4, pr.Width + 8, pr.Height + 8);
+            int a = (int)(100 * f);
+            SolidBrush core = GetCachedBrush(Color.FromArgb(Math.Clamp(a, 0, 130), 160, 130, 240));
+            g.FillRectangle(core, 0, bandTop, clientWidth, playHeight - bandTop);
         }
     }
 
@@ -569,36 +637,135 @@ public sealed class RenderSystem
             float fade = ex.FramesLeft / (float)ex.MaxFrames;
             int baseA = Math.Clamp((int)(255 * fade), 18, 255);
 
-            int aOut = (int)(baseA * 0.42f);
-            var outer = GetCachedPen(Color.FromArgb(aOut, 255, 55, 30), 4.5f, join: LineJoin.Round);
-            g.DrawEllipse(outer, ex.X - radius, ex.Y - radius, radius * 2f, radius * 2f);
+            // Filled core for punch; strokes for expanding rings.
+            float fillR = Math.Max(6f, radius * 0.28f);
+            int fillA = Math.Clamp((int)(baseA * 0.55f), 40, 200);
+            ExplosionCoreFillBrush.Color = Color.FromArgb(fillA, 255, 210, 90);
+            g.FillEllipse(ExplosionCoreFillBrush, ex.X - fillR, ex.Y - fillR, fillR * 2f, fillR * 2f);
+
+            ExplosionOuterPen.Color = Color.FromArgb((int)(baseA * 0.42f), 255, 55, 30);
+            g.DrawEllipse(ExplosionOuterPen, ex.X - radius, ex.Y - radius, radius * 2f, radius * 2f);
 
             float rMid = Math.Max(8f, radius * 0.64f);
-            int aMid = (int)(baseA * 0.78f);
-            var mid = GetCachedPen(Color.FromArgb(aMid, 255, 150, 45), 3f);
-            g.DrawEllipse(mid, ex.X - rMid, ex.Y - rMid, rMid * 2f, rMid * 2f);
+            ExplosionMidPen.Color = Color.FromArgb((int)(baseA * 0.78f), 255, 150, 45);
+            g.DrawEllipse(ExplosionMidPen, ex.X - rMid, ex.Y - rMid, rMid * 2f, rMid * 2f);
 
             float rCore = Math.Max(5f, radius * 0.36f);
-            var core = GetCachedPen(Color.FromArgb(Math.Min(255, baseA + 25), 255, 255, 230), 2.4f);
-            g.DrawEllipse(core, ex.X - rCore, ex.Y - rCore, rCore * 2f, rCore * 2f);
+            ExplosionCorePen.Color = Color.FromArgb(Math.Min(255, baseA + 25), 255, 255, 230);
+            g.DrawEllipse(ExplosionCorePen, ex.X - rCore, ex.Y - rCore, rCore * 2f, rCore * 2f);
         }
+    }
+
+    private static void DrawImpactFlash(Graphics g, GameState state)
+    {
+        if (state.ImpactFlashFrames <= 0) return;
+        float t = state.ImpactFlashFrames / (float)GameConfig.Effects.ImpactFlashFrames;
+        int alpha = Math.Clamp((int)(80 + 175 * t), 80, 255);
+        ImpactFlashBrush.Color = Color.FromArgb(alpha, 255, 250, 210);
+        float cx = state.ImpactFlashX;
+        float cy = state.ImpactFlashY;
+        float arm = 5f + 4f * t;
+        g.FillRectangle(ImpactFlashBrush, cx - arm, cy - 1.5f, arm * 2f, 3f);
+        g.FillRectangle(ImpactFlashBrush, cx - 1.5f, cy - arm, 3f, arm * 2f);
+        float core = 3f + 2f * t;
+        g.FillRectangle(ImpactFlashBrush, cx - core * 0.5f, cy - core * 0.5f, core, core);
+    }
+
+    private static void DrawAttractOverlay(Graphics g, Font uiFont, int clientWidth, int playHeight)
+    {
+        var title = GetCachedFont(uiFont, 22f, FontStyle.Bold);
+        const string t = "READY?";
+        SizeF tsz = g.MeasureString(t, title);
+        // Keep title clear of the taller Start + Scores stack at the bottom.
+        float titleY = playHeight * 0.30f;
+        g.DrawString(t, title, TextBrush, (clientWidth - tsz.Width) * 0.5f, titleY);
+
+        var startFont = GetCachedFont(uiFont, uiFont.Size + 1.5f, FontStyle.Bold);
+        const string startHint = "Enter or click Start · Scores for leaderboard";
+        SizeF startSz = g.MeasureString(startHint, startFont);
+        float startY = titleY + tsz.Height + 10f;
+        g.DrawString(startHint, startFont, AttractHintBrush, (clientWidth - startSz.Width) * 0.5f, startY);
+
+        var controlsFont = GetCachedFont(uiFont, uiFont.Size, FontStyle.Regular);
+        const string controls = "Move: arrows / A D   ·   Fire: Space   ·   Pause: ESC";
+        SizeF ctrlSz = g.MeasureString(controls, controlsFont);
+        g.DrawString(controls, controlsFont, AttractHintBrush, (clientWidth - ctrlSz.Width) * 0.5f, startY + startSz.Height + 12f);
+    }
+
+    /// <summary>
+    /// Places an action hint in the band above the WinForms button stack so it cannot collide with buttons.
+    /// </summary>
+    private static void DrawOverlayActionHint(
+        Graphics g,
+        Font uiFont,
+        int clientWidth,
+        int playHeight,
+        float contentBottom,
+        string hint)
+    {
+        const float buttonStackHeight = 114f;
+        float hintMaxY = playHeight - buttonStackHeight - 22f;
+        float hintY = Math.Min(contentBottom + 10f, hintMaxY);
+        hintY = Math.Max(contentBottom + 4f, hintY);
+        var hintBr = GetCachedBrush(Color.FromArgb(230, 230, 238));
+        DrawCenteredText(g, hint, uiFont, hintBr, clientWidth, hintY);
+    }
+
+    /// <summary>Minimal attract HUD: BEST only so READY stays the focus.</summary>
+    private static void DrawAttractHud(Graphics g, Font uiFont, int clientWidth, GameState state)
+    {
+        var bestBr = GetCachedBrush(Color.FromArgb(140, 176, 188));
+        var bestFont = GetCachedFont(uiFont, uiFont.Size, FontStyle.Regular);
+        string bestText = $"BEST {state.HighScore}";
+        SizeF bestSize = g.MeasureString(bestText, bestFont);
+        g.DrawString(bestText, bestFont, bestBr, clientWidth - bestSize.Width - 18f, 14f);
     }
 
     private static void DrawHud(Graphics g, Font uiFont, int clientWidth, GameState state)
     {
-        DrawLives(g, state);
+        if (!state.IsLifeLost)
+            DrawLives(g, state);
         DrawScore(g, state, uiFont, clientWidth);
         DrawBestScore(g, state, uiFont, clientWidth);
         DrawPowerUpHud(g, state, uiFont, clientWidth);
-        if (state.ComboStreak > 1)
+        DrawComboHud(g, uiFont, clientWidth, state);
+    }
+
+    private static void DrawComboHud(Graphics g, Font uiFont, int clientWidth, GameState state)
+    {
+        int m = state.ComboMultiplier;
+        bool hot = state.ComboStreak > 1;
+        var comboBr = GetCachedBrush(hot
+            ? Color.FromArgb(255, 255, 165, 70)
+            : Color.FromArgb(120, 176, 188, 200));
+        float sizeBoost = hot ? 4f : 0f;
+        FontStyle style = hot ? FontStyle.Bold : FontStyle.Regular;
+        var comboFont = GetCachedFont(uiFont, uiFont.Size + sizeBoost, style);
+        if (m != _hudComboMultCached || hot != _hudComboHotCached)
         {
-            int m = state.ComboMultiplier;
-            var comboBr = GetCachedBrush(Color.FromArgb(255, 255, 165, 70));
-            var comboFont = GetCachedFont(uiFont, uiFont.Size + 4f, FontStyle.Bold);
-            string comboText = $"COMBO x{m}";
-            SizeF comboSize = g.MeasureString(comboText, comboFont);
-            float cx = clientWidth - comboSize.Width - 18;
-            g.DrawString(comboText, comboFont, comboBr, cx, 92);
+            _hudComboMultCached = m;
+            _hudComboHotCached = hot;
+            _hudComboText = $"COMBO x{m}";
+            _hudComboWidth = g.MeasureString(_hudComboText, comboFont).Width;
+        }
+        float cx = clientWidth - _hudComboWidth - 18;
+        g.DrawString(_hudComboText, comboFont, comboBr, cx, 92);
+    }
+
+    private static void DrawScorePopups(Graphics g, Font uiFont, IReadOnlyList<ScorePopup> popups)
+    {
+        if (popups.Count == 0) return;
+        var font = GetCachedFont(uiFont, uiFont.Size + 4f, FontStyle.Bold);
+        float charW = font.Size * 0.74f;
+        for (int i = 0; i < popups.Count; i++)
+        {
+            ScorePopup p = popups[i];
+            float t = p.LifeT;
+            int alpha = (int)Math.Clamp(90 + t * 165f, 90, 255);
+            ScorePopupBrush.Color = Color.FromArgb(alpha, 255, 235, 130);
+            float textW = p.Text.Length * charW;
+            float textH = font.Size * 1.4f;
+            g.DrawString(p.Text, font, ScorePopupBrush, p.X - textW * 0.5f, p.Y - textH * 0.5f);
         }
     }
 
@@ -610,6 +777,18 @@ public sealed class RenderSystem
         var labelFont = Ui8RegularFont;
         g.DrawString("LIVES", labelFont, labelBr, x, y - 1);
         DrawLifeIcons(g, x + 46, y + 2, state.MaxLives, 12, state.Lives);
+
+        // Shield charge pip when protection remains but the HUD card shows another buff.
+        bool showShieldPip = state.HasShieldActive && state.ActivePowerUp is not PowerUpType.Shield;
+        if (!showShieldPip) return;
+
+        float pipX = x + 46 + state.MaxLives * (12 + 8) + 4;
+        float pipY = y + 1;
+        const float pip = 14f;
+        Color c = GetPowerUpColor(PowerUpType.Shield);
+        var halo = GetCachedBrush(Color.FromArgb(90, c));
+        g.FillEllipse(halo, pipX - 1f, pipY - 1f, pip + 2f, pip + 2f);
+        DrawPowerUpGlyph(g, PowerUpType.Shield, c, pipX + 2f, pipY + 2f, pip - 4f, pip - 4f);
     }
 
     private static void DrawScore(Graphics g, GameState state, Font uiFont, int clientWidth)
@@ -618,10 +797,14 @@ public sealed class RenderSystem
         var scoreBr = GetCachedBrush(Color.FromArgb(235, 245, 255));
         var labelFont = GetCachedFont(uiFont, uiFont.Size - 1f, FontStyle.Regular);
         var scoreFont = GetCachedFont(uiFont, uiFont.Size + 6f, FontStyle.Bold);
-        string label = "SCORE";
-        string value = state.Score.ToString();
-        SizeF valueSize = g.MeasureString(value, scoreFont);
-        float boxW = Math.Max(110f, valueSize.Width + 22f);
+        const string label = "SCORE";
+        if (state.Score != _hudScoreCached)
+        {
+            _hudScoreCached = state.Score;
+            _hudScoreText = state.Score.ToString();
+            _hudScoreWidth = g.MeasureString(_hudScoreText, scoreFont).Width;
+        }
+        float boxW = Math.Max(110f, _hudScoreWidth + 22f);
         float boxH = 48f;
         float boxX = clientWidth - boxW - 12f;
         float boxY = 10f;
@@ -630,16 +813,20 @@ public sealed class RenderSystem
         g.FillRectangle(boxBr, boxX, boxY, boxW, boxH);
         g.DrawRectangle(boxPen, boxX, boxY, boxW - 1, boxH - 1);
         g.DrawString(label, labelFont, labelBr, boxX + 10, boxY + 4);
-        g.DrawString(value, scoreFont, scoreBr, boxX + 10, boxY + 16);
+        g.DrawString(_hudScoreText, scoreFont, scoreBr, boxX + 10, boxY + 16);
     }
 
     private static void DrawBestScore(Graphics g, GameState state, Font uiFont, int clientWidth)
     {
         var bestBr = GetCachedBrush(Color.FromArgb(165, 176, 188));
         var bestFont = GetCachedFont(uiFont, uiFont.Size, FontStyle.Regular);
-        string bestText = $"BEST {state.HighScore}";
-        SizeF bestSize = g.MeasureString(bestText, bestFont);
-        g.DrawString(bestText, bestFont, bestBr, clientWidth - bestSize.Width - 18f, 62f);
+        if (state.HighScore != _hudBestCached)
+        {
+            _hudBestCached = state.HighScore;
+            _hudBestText = $"BEST {state.HighScore}";
+            _hudBestWidth = g.MeasureString(_hudBestText, bestFont).Width;
+        }
+        g.DrawString(_hudBestText, bestFont, bestBr, clientWidth - _hudBestWidth - 18f, 62f);
     }
 
     private static void DrawNewBestBanner(Graphics g, Font uiFont, int clientWidth, GameState state)
@@ -647,8 +834,9 @@ public sealed class RenderSystem
         if (!state.IsNewBestThisRun || state.NewBestFlashFrames <= 0) return;
         float t = state.NewBestFlashFrames / 150f;
         int alpha = 120 + (int)(120f * Math.Min(1f, t + 0.1f));
-        float rise = (1f - t) * 12f;
-        float y = 18f - rise;
+        float rise = (1f - t) * 10f;
+        // Sit under the centered power-up card (y=8, h=62) so the two never stack.
+        float y = 76f - rise;
 
         var back = GetCachedBrush(Color.FromArgb(Math.Min(220, alpha), 40, 22, 0));
         var text = GetCachedBrush(Color.FromArgb(Math.Min(255, alpha + 20), 255, 210, 85));
@@ -667,10 +855,20 @@ public sealed class RenderSystem
         foreach (var p in powerUps)
         {
             Rectangle r = p.GetBounds();
-            PowerUpBrush.Color = GetPowerUpColor(p.Type);
+            Color c = GetPowerUpColor(p.Type);
+            PowerUpBrush.Color = c;
             g.FillEllipse(PowerUpBrush, r);
-            var pen = GetCachedPen(Color.FromArgb(180, 0, 0, 0));
+            var pen = GetCachedPen(Color.FromArgb(200, 255, 255, 255), 1.2f);
             g.DrawEllipse(pen, r);
+            float pad = Math.Max(2f, r.Width * 0.18f);
+            DrawPowerUpGlyph(
+                g,
+                p.Type,
+                Color.FromArgb(255, 255, 255, 255),
+                r.X + pad,
+                r.Y + pad,
+                r.Width - pad * 2f,
+                r.Height - pad * 2f);
         }
     }
 
@@ -829,7 +1027,7 @@ public sealed class RenderSystem
         PowerUpType.RapidFire => Color.Orange,
         PowerUpType.MultiShot => Color.DeepSkyBlue,
         PowerUpType.PiercingShot => Color.MediumPurple,
-        PowerUpType.Shield => Color.FromArgb(255, 70, 210, 255),
+        PowerUpType.Shield => Color.FromArgb(255, 175, 150, 245),
         PowerUpType.SlowMotion => Color.Cyan,
         PowerUpType.BombShot => Color.OrangeRed,
         _ => Color.White
@@ -952,20 +1150,34 @@ public sealed class RenderSystem
         int clientWidth,
         int playHeight,
         int currentScore,
-        float minTopY)
+        float minTopY,
+        string? highlightName = null)
     {
-        const float reservedBottom = 96f; // Keep clear of the Play again button area.
+        // Reserve room for primary+secondary WinForms buttons plus a short on-canvas hint band.
+        const float reservedBottom = 148f;
         float maxBottomY = playHeight - reservedBottom;
         float panelW = Math.Min(380f, clientWidth - 44f);
         float rowH = 22f;
-        float availableHeight = Math.Max(120f, maxBottomY - minTopY);
+        float availableHeight = Math.Max(96f, maxBottomY - minTopY);
         int maxRowsByHeight = Math.Max(1, (int)MathF.Floor((availableHeight - 86f) / rowH));
         int rows = Math.Min(Math.Min(leaderboard.Count, 10), maxRowsByHeight);
         float panelH = 70f + Math.Max(1, rows) * rowH + 16f;
+
+        // Prefer anchoring under content above; never slide upward past minTopY into titles.
+        float panelY = minTopY;
+        if (panelY + panelH > maxBottomY)
+        {
+            // Shrink rows until the panel fits in the remaining band.
+            float fitH = Math.Max(96f, maxBottomY - minTopY);
+            maxRowsByHeight = Math.Max(1, (int)MathF.Floor((fitH - 86f) / rowH));
+            rows = Math.Min(Math.Min(leaderboard.Count, 10), maxRowsByHeight);
+            panelH = 70f + Math.Max(1, rows) * rowH + 16f;
+            panelY = minTopY;
+            if (panelY + panelH > maxBottomY)
+                panelY = Math.Max(minTopY, maxBottomY - panelH);
+        }
+
         float panelX = (clientWidth - panelW) * 0.5f;
-        float centeredY = (playHeight - panelH) * 0.5f + 28f;
-        float panelY = Math.Max(minTopY, centeredY);
-        panelY = Math.Min(panelY, maxBottomY - panelH);
         DrawPanelFrame(g, panelX, panelY, panelW, panelH);
 
         var titleFont = GetCachedFont(uiFont, uiFont.Size + 4f, FontStyle.Bold);
@@ -997,7 +1209,10 @@ public sealed class RenderSystem
         for (int i = 0; i < rows; i++)
         {
             var entry = leaderboard[i];
-            bool isCurrent = !highlightedCurrent && entry.Score == currentScore && currentScore > 0;
+            bool scoreMatch = entry.Score == currentScore && currentScore > 0;
+            bool nameMatch = !string.IsNullOrWhiteSpace(highlightName)
+                && string.Equals(entry.Name, highlightName, StringComparison.OrdinalIgnoreCase);
+            bool isCurrent = !highlightedCurrent && scoreMatch && (nameMatch || highlightName is null);
             if (isCurrent) highlightedCurrent = true;
             bool isTop = i == 0;
 
@@ -1081,36 +1296,47 @@ public sealed class RenderSystem
         }
     }
 
-    /// <summary>Draws layered synthwave background passes behind gameplay entities.</summary>
+    /// <summary>Draws the cached synthwave backdrop (rebuilt only when playfield size changes).</summary>
     private static void DrawBackground(Graphics g, int w, int h)
     {
-        DrawSynthwaveGradient(g, w, h);
-        DrawSynthwaveSun(g, w, h);
-        DrawSynthwaveSkyline(g, w, h);
-        DrawSynthwaveGrid(g, w, h);
+        EnsureBackgroundCache(w, h);
+        g.DrawImageUnscaled(CachedBackgroundBitmap!, 0, 0);
+    }
+
+    private static void EnsureBackgroundCache(int w, int h)
+    {
+        int ww = Math.Max(1, w);
+        int hh = Math.Max(1, h);
+        if (CachedBackgroundBitmap is not null && CachedBgWidth == ww && CachedBgHeight == hh)
+            return;
+
+        CachedBackgroundBitmap?.Dispose();
+        CachedBackgroundBitmap = new Bitmap(ww, hh);
+        CachedBgWidth = ww;
+        CachedBgHeight = hh;
+
+        using Graphics bg = Graphics.FromImage(CachedBackgroundBitmap);
+        bg.SmoothingMode = SmoothingMode.AntiAlias;
+        bg.CompositingQuality = CompositingQuality.HighSpeed;
+        bg.PixelOffsetMode = PixelOffsetMode.HighSpeed;
+        DrawSynthwaveGradient(bg, ww, hh);
+        DrawSynthwaveSun(bg, ww, hh);
+        DrawSynthwaveSkyline(bg, ww, hh);
+        DrawSynthwaveGrid(bg, ww, hh);
     }
 
     /// <summary>Vertical multi-stop gradient: deep purple-blue → magenta → warm sunset.</summary>
     private static void DrawSynthwaveGradient(Graphics g, int w, int h)
     {
-        int hh = Math.Max(1, h);
-        // Rebuild only when viewport dimensions change; otherwise reuse the brush each frame.
-        if (CachedSkyBrush is null || CachedSkyWidth != w || CachedSkyHeight != hh)
+        using var sky = new LinearGradientBrush(
+            new Rectangle(0, 0, w, h),
+            Color.FromArgb(255, 14, 8, 40),
+            Color.FromArgb(255, 255, 195, 75),
+            LinearGradientMode.Vertical)
         {
-            CachedSkyBrush?.Dispose();
-            CachedSkyBrush = new LinearGradientBrush(
-                new Rectangle(0, 0, w, hh),
-                Color.FromArgb(255, 14, 8, 40),
-                Color.FromArgb(255, 255, 195, 75),
-                LinearGradientMode.Vertical)
-            {
-                InterpolationColors = SkyGradientBlend
-            };
-            CachedSkyWidth = w;
-            CachedSkyHeight = hh;
-        }
-
-        g.FillRectangle(CachedSkyBrush, 0, 0, w, hh);
+            InterpolationColors = SkyGradientBlend
+        };
+        g.FillRectangle(sky, 0, 0, w, h);
     }
 
     /// <summary>Large sunset disk with horizontal scanlines (retro CRT striping).</summary>
@@ -1206,10 +1432,14 @@ public sealed class RenderSystem
             (int)(from.B + (to.B - from.B) * u));
     }
 
-    /// <summary>Returns a shared font instance keyed by family/size/style.</summary>
+    /// <summary>Returns a shared font instance keyed by family hash / size / style (no string alloc).</summary>
     private static Font GetCachedFont(Font baseFont, float size, FontStyle style)
     {
-        string key = $"{baseFont.FontFamily.Name}|{size:0.##}|{(int)style}";
+        // size quantized to 0.01pt; family hash in high bits.
+        int sizeQ = (int)MathF.Round(size * 100f);
+        long key = ((long)(uint)baseFont.FontFamily.GetHashCode() << 32)
+                   | ((long)(uint)sizeQ << 8)
+                   | (byte)style;
         if (FontCache.TryGetValue(key, out Font? cached))
         {
             TouchKey(FontLru, FontNodes, key);
@@ -1240,7 +1470,7 @@ public sealed class RenderSystem
         return created;
     }
 
-    /// <summary>Returns a shared pen keyed by color/width/stroke style parameters.</summary>
+    /// <summary>Returns a shared pen keyed by packed color/width/style (no string alloc).</summary>
     private static Pen GetCachedPen(
         Color color,
         float width = 1f,
@@ -1249,7 +1479,15 @@ public sealed class RenderSystem
         LineCap endCap = LineCap.Flat,
         LineJoin join = LineJoin.Miter)
     {
-        string key = $"{color.ToArgb()}|{width:0.###}|{(int)dash}|{(int)startCap}|{(int)endCap}|{(int)join}";
+        // Width quantized to 0.001px in 16 bits (~65.5 max encoded).
+        int widthQ = Math.Clamp((int)MathF.Round(width * 1000f), 0, 65535);
+        ulong keyBits = ((ulong)(uint)color.ToArgb() << 32)
+                        | ((ulong)(uint)widthQ << 16)
+                        | ((ulong)(byte)dash << 12)
+                        | ((ulong)(byte)startCap << 8)
+                        | ((ulong)(byte)endCap << 4)
+                        | ((ulong)(byte)join & 0xFul);
+        long key = unchecked((long)keyBits);
         if (PenCache.TryGetValue(key, out Pen? cached))
         {
             TouchKey(PenLru, PenNodes, key);
@@ -1271,18 +1509,22 @@ public sealed class RenderSystem
     }
 
     /// <summary>
-    /// Disposes and clears all static pen/brush/font caches and the viewport-sized sky <see cref="LinearGradientBrush"/>.
-    /// Safe to call more than once (subsequent calls are no-ops until caches are repopulated by drawing).
+    /// Disposes and clears all static pen/brush/font caches and the backdrop <see cref="Bitmap"/>.
+    /// Mutable FX pens are process-lifetime (not disposed) so a second draw after cleanup cannot use freed GDI handles.
+    /// Safe to call more than once.
     /// </summary>
     public static void DisposeSharedResources()
     {
         DisposeCache(FontCache, FontLru, FontNodes, static disposable => disposable.Dispose());
         DisposeCache(BrushCache, BrushLru, BrushNodes, static disposable => disposable.Dispose());
         DisposeCache(PenCache, PenLru, PenNodes, static disposable => disposable.Dispose());
-        CachedSkyBrush?.Dispose();
-        CachedSkyBrush = null;
-        CachedSkyWidth = -1;
-        CachedSkyHeight = -1;
+        CachedBackgroundBitmap?.Dispose();
+        CachedBackgroundBitmap = null;
+        CachedBgWidth = -1;
+        CachedBgHeight = -1;
+        _hudScoreCached = int.MinValue;
+        _hudBestCached = int.MinValue;
+        _hudComboMultCached = int.MinValue;
     }
 
     private static void TouchKey<TKey>(

@@ -26,4 +26,7 @@ public static class GameAudio
 
     /// <summary>Plays piercing-shot hit feedback sound.</summary>
     public static void PlayPierceHit() => SoundGenerator.PlayPierceHitSound();
+
+    /// <summary>Plays bomb detonation boom (distinct from bullet hit).</summary>
+    public static void PlayBomb() => SoundGenerator.PlayBombSound();
 }

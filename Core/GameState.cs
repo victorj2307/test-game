@@ -21,6 +21,8 @@ public sealed class GameState
     private long _finalDeathSlowMoStartTickMs;
     public bool IsPaused { get; private set; }
     public bool ShowLeaderboard { get; private set; }
+    /// <summary>Attract-only overlay: browse Top-N scores without starting a run.</summary>
+    public bool IsBrowsingLeaderboard { get; private set; }
     /// <summary>Relaxed difficulty, boosted drops, optional hotkeys; toggled at runtime (persists across new games).</summary>
     public bool IsDevMode { get; set; }
     public int Score { get; set; }
@@ -73,17 +75,29 @@ public sealed class GameState
     /// <summary>Shield charge active (blocks one floor hit).</summary>
     public bool HasShieldActive => ShieldCharges > 0;
 
-    /// <summary>Cyan pickup pulse on player after collecting shield.</summary>
+    /// <summary>Cyan pickup wash on the base barrier after collecting shield.</summary>
     public int ShieldPickupFlashFrames { get; private set; }
 
-    /// <summary>Brief cyan flash when shield absorbs a hit.</summary>
+    /// <summary>Brief cyan floor flash when shield absorbs a hit.</summary>
     public int ShieldBlockFlashFrames { get; private set; }
 
-    /// <summary>Expanding ring frames at player when shield pops.</summary>
+    /// <summary>Expanding floor ripple frames when shield blocks a floor hit.</summary>
     public int ShieldBlockRingFrames { get; private set; }
+
+    /// <summary>World X of the bar center when shield last blocked a floor hit (FX origin).</summary>
+    public float ShieldBlockImpactX { get; private set; }
 
     /// <summary>Short extra shake when shield absorbs a floor hit.</summary>
     public int ShieldImpactShakeFrames { get; private set; }
+
+    /// <summary>Brief contact flash at last bullet hit (decremented in <see cref="AdvanceFrame"/>).</summary>
+    public int ImpactFlashFrames { get; private set; }
+
+    /// <summary>World X of the latest impact flash.</summary>
+    public float ImpactFlashX { get; private set; }
+
+    /// <summary>World Y of the latest impact flash.</summary>
+    public float ImpactFlashY { get; private set; }
 
     /// <summary>Full-screen warm flash after bomb detonation; decremented in <see cref="AdvanceFrame"/>.</summary>
     public int BombScreenFlashFrames { get; private set; }
@@ -127,6 +141,7 @@ public sealed class GameState
         SimulationTimeScale = 1f;
         IsPaused = false;
         ShowLeaderboard = false;
+        IsBrowsingLeaderboard = false;
     }
 
     /// <summary>Ends active play and transitions to terminal game-over state.</summary>
@@ -138,11 +153,25 @@ public sealed class GameState
     /// <summary>Leaves paused state when current run can resume.</summary>
     public void Resume() => SetPaused(false);
 
-    /// <summary>Shows leaderboard overlay.</summary>
+    /// <summary>Shows game-over leaderboard overlay (FINAL RESULTS path).</summary>
     public void ShowLeaderboardScreen() => ShowLeaderboard = true;
 
-    /// <summary>Hides leaderboard overlay.</summary>
+    /// <summary>Hides game-over leaderboard overlay.</summary>
     public void HideLeaderboardScreen() => ShowLeaderboard = false;
+
+    /// <summary>
+    /// Opens attract-mode score browse. Only valid when idle (not playing / game over / life lost).
+    /// </summary>
+    public bool TryOpenLeaderboardBrowse()
+    {
+        if (IsPlaying || IsGameOver || IsLifeLost || IsFinalDeathAnimating)
+            return false;
+        IsBrowsingLeaderboard = true;
+        return true;
+    }
+
+    /// <summary>Closes attract-mode score browse.</summary>
+    public void CloseLeaderboardBrowse() => IsBrowsingLeaderboard = false;
 
     /// <summary>Controlled playing-state transition.</summary>
     public void SetPlaying(bool playing)
@@ -173,6 +202,7 @@ public sealed class GameState
         IsPaused = false;
         IsPlaying = false;
         ShowLeaderboardScreen();
+        CloseLeaderboardBrowse();
     }
 
     /// <summary>Resets all run-scoped state to new-game defaults.</summary>
@@ -188,6 +218,7 @@ public sealed class GameState
         SimulationTimeScale = 1f;
         IsPaused = false;
         HideLeaderboardScreen();
+        CloseLeaderboardBrowse();
         ElapsedFrames = 0;
         BarSpeed = initialBarSpeed;
         SpawnIntervalFrames = initialSpawnIntervalFrames;
@@ -206,6 +237,7 @@ public sealed class GameState
         MuzzleFlashFrames = 0;
         ShakeUntilTickMs = 0;
         LifeLostFlashFrames = 0;
+        ImpactFlashFrames = 0;
         BarsSinceLastPowerUpDrop = 0;
         LastPlayerStepLeftMs = 0;
         LastPlayerStepRightMs = 0;
@@ -228,6 +260,7 @@ public sealed class GameState
         SpawnCountdown = GameConfig.Spawn.InitialSpawnCountdownFrames;
         NextSpawnLaneX = null;
         MuzzleFlashFrames = 0;
+        ImpactFlashFrames = 0;
         LifeLostFlashFrames = GameConfig.Effects.LifeLostFlashFrames;
         LastFireTimeMs = 0;
         BarsSinceLastPowerUpDrop = 0;
@@ -248,6 +281,7 @@ public sealed class GameState
         ShieldPickupFlashFrames = 0;
         ShieldBlockFlashFrames = 0;
         ShieldBlockRingFrames = 0;
+        ShieldBlockImpactX = 0f;
         ShieldImpactShakeFrames = 0;
     }
 
@@ -263,6 +297,14 @@ public sealed class GameState
     {
         BombScreenFlashFrames = 0;
         BombHeavyShakeFrames = 0;
+    }
+
+    /// <summary>Brief bright flash at a bullet/bar contact point.</summary>
+    public void TriggerImpactFlash(float x, float y, int frames = GameConfig.Effects.ImpactFlashFrames)
+    {
+        ImpactFlashX = x;
+        ImpactFlashY = y;
+        ImpactFlashFrames = Math.Max(ImpactFlashFrames, frames);
     }
 
     /// <summary>~200–500 ms at game tick rate: random point in play rect, then fuse counts down each frame.</summary>
@@ -297,6 +339,7 @@ public sealed class GameState
         if (MuzzleFlashFrames > 0) MuzzleFlashFrames--;
         if (LifeLostFlashFrames > 0) LifeLostFlashFrames--;
         if (NewBestFlashFrames > 0) NewBestFlashFrames--;
+        if (ImpactFlashFrames > 0) ImpactFlashFrames--;
         if (BombScreenFlashFrames > 0) BombScreenFlashFrames--;
         if (BombHeavyShakeFrames > 0) BombHeavyShakeFrames--;
         if (ShieldPickupFlashFrames > 0) ShieldPickupFlashFrames--;
@@ -320,8 +363,11 @@ public sealed class GameState
         }
     }
 
-    /// <summary>Registers one bar destruction for score/combo/high-score and feedback timing.</summary>
-    public void RegisterBarDestroyed(bool isSpecial = false)
+    /// <summary>
+    /// Registers one bar destruction for score/combo/high-score and feedback timing.
+    /// Returns points awarded this destroy: <c>min(combo, 4) × (2 if special else 1)</c>.
+    /// </summary>
+    public int RegisterBarDestroyed(bool isSpecial = false)
     {
         if (_lastDestroyFrame >= 0 && ElapsedFrames - _lastDestroyFrame <= ComboTimeWindowFrames)
             _combo++;
@@ -331,7 +377,8 @@ public sealed class GameState
         if (_combo > MaxCombo) MaxCombo = _combo;
         int mult = ComboMultiplier;
         int specialMult = isSpecial ? GameConfig.Scoring.SpecialBarScoreMultiplier : 1;
-        Score += mult * specialMult;
+        int points = mult * specialMult;
+        Score += points;
         if (!IsNewBestThisRun && Score > PreviousBestScore)
         {
             IsNewBestThisRun = true;
@@ -339,6 +386,7 @@ public sealed class GameState
         }
         if (Score > HighScore) HighScore = Score;
         ShakeUntilTickMs = Environment.TickCount64 + GameConfig.Effects.DestroyShakeMs;
+        return points;
     }
 
     /// <summary>Consumes one life and returns true when lives are depleted.</summary>
@@ -474,8 +522,8 @@ public sealed class GameState
             ? GameConfig.PowerUps.SlowMotionPixelSpeedScale
             : 1f;
 
-    /// <summary>Consumes active shield charge and triggers shield-block feedback.</summary>
-    public bool TryConsumeShield()
+    /// <summary>Consumes active shield charge and triggers shield-block feedback at <paramref name="impactX"/>.</summary>
+    public bool TryConsumeShield(float impactX = 0f)
     {
         if (ShieldCharges <= 0) return false;
         ShieldCharges--;
@@ -484,6 +532,7 @@ public sealed class GameState
             ActivePowerUp = null;
             ActivePowerUpDurationFrames = 0;
         }
+        ShieldBlockImpactX = impactX;
         ShieldBlockFlashFrames = Math.Max(ShieldBlockFlashFrames, GameConfig.PowerUps.ShieldBlockFlashFrames);
         ShieldBlockRingFrames = Math.Max(ShieldBlockRingFrames, GameConfig.PowerUps.ShieldBlockRingFrames);
         ShieldImpactShakeFrames = Math.Max(ShieldImpactShakeFrames, GameConfig.PowerUps.ShieldImpactShakeFrames);

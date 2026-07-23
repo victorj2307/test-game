@@ -23,6 +23,7 @@ public sealed class GameManager
     private readonly SpawnSystem _spawn;
     private readonly RenderSystem _renderer = new();
     private List<HighScoreStore.LeaderboardEntry> _leaderboard;
+    private string? _leaderboardHighlightName;
     private int _lastAppliedBarSpeed = -1;
     private int _lastClientWidth = 480;
     private int _lastPlayHeight = 600;
@@ -48,6 +49,9 @@ public sealed class GameManager
     public bool IsDevMode => _state.IsDevMode;
     public int Score => _state.Score;
     public bool IsGameOver => _state.IsGameOver;
+    public bool IsBrowsingLeaderboard => _state.IsBrowsingLeaderboard;
+    /// <summary>True on the idle attract screen (not playing, not game over).</summary>
+    public bool IsAttractMode => !_state.IsPlaying && !_state.IsGameOver && !_state.IsLifeLost;
 
     /// <summary>Test-only access to run state (via InternalsVisibleTo).</summary>
     internal GameState StateForTests => _state;
@@ -89,8 +93,17 @@ public sealed class GameManager
     /// <summary>Persists a final score entry and refreshes in-memory leaderboard data.</summary>
     public void SubmitLeaderboardScore(string name)
     {
-        if (HighScoreStore.TryAddScore(name, _state.Score, LeaderboardMaxEntries))
+        string normalized = string.IsNullOrWhiteSpace(name)
+            ? GameConfig.Persistence.DefaultPlayerName
+            : name.Trim();
+        if (HighScoreStore.TryAddScore(normalized, _state.Score, LeaderboardMaxEntries))
+        {
             _leaderboard = HighScoreStore.LoadLeaderboard(LeaderboardMaxEntries).ToList();
+            // Prefer the stored row's casing after normalize/reload for highlight matching.
+            _leaderboardHighlightName = _leaderboard
+                .FirstOrDefault(e => string.Equals(e.Name, normalized, StringComparison.OrdinalIgnoreCase))
+                ?.Name ?? normalized;
+        }
     }
 
     private static int PlayerStepPixels => GameConfig.Bars.Width / 2;
@@ -105,7 +118,7 @@ public sealed class GameManager
         _state.IsDevMode = !_state.IsDevMode;
         if (_state.IsPlaying && !_state.IsGameOver)
         {
-            _difficulty.SyncBarSpeedFromScore();
+            _difficulty.ApplyDifficultyImmediate();
             SyncBarSpeedTargetForActiveEffects(force: true);
         }
 #endif
@@ -165,15 +178,32 @@ public sealed class GameManager
     /// <summary>Enters non-playing attract state and refreshes leaderboard cache.</summary>
     public void EnterAttractMode(int clientWidth, int playHeight)
     {
+        _leaderboardHighlightName = null;
         _state.SetPlaying(false);
         _state.HideLeaderboardScreen();
+        _state.CloseLeaderboardBrowse();
         _leaderboard = HighScoreStore.LoadLeaderboard(LeaderboardMaxEntries).ToList();
         ResetState(clientWidth, playHeight);
     }
 
+    /// <summary>Opens attract-mode leaderboard browse and refreshes scores from disk.</summary>
+    public bool TryOpenLeaderboardBrowse()
+    {
+        if (!_state.TryOpenLeaderboardBrowse())
+            return false;
+        _leaderboardHighlightName = null;
+        _leaderboard = HighScoreStore.LoadLeaderboard(LeaderboardMaxEntries).ToList();
+        return true;
+    }
+
+    /// <summary>Closes attract-mode leaderboard browse.</summary>
+    public void CloseLeaderboardBrowse() => _state.CloseLeaderboardBrowse();
+
     /// <summary>Starts a new playable run.</summary>
     public void StartNewGame(int clientWidth, int playHeight)
     {
+        _leaderboardHighlightName = null;
+        _state.CloseLeaderboardBrowse();
         _state.StartGame();
         ResetState(clientWidth, playHeight);
     }
@@ -258,6 +288,7 @@ public sealed class GameManager
             _entities.UpdateBullets(simDtMain);
             _entities.UpdateParticles(simDtMain);
             _entities.UpdateFragments(simDtMain);
+            _entities.UpdateScorePopups(simDtMain);
             _entities.UpdatePowerUps(playHeight, simDtMain);
             CollectPowerUps(clientWidth, playHeight);
             if (_state.TickBombFuse())
@@ -273,7 +304,7 @@ public sealed class GameManager
                 var b = _entities.Bars[i];
                 if (b.GetBounds().Bottom >= playHeight)
                 {
-                    if (_state.TryConsumeShield())
+                    if (_state.TryConsumeShield(b.X + b.Width * 0.5f))
                     {
                         _entities.Bars.RemoveAt(i);
                         continue;
@@ -292,6 +323,7 @@ public sealed class GameManager
                         _entities.PowerUps.Clear();
                         _entities.Explosions.Clear();
                         _entities.Particles.Clear();
+                        _entities.ScorePopups.Clear();
                         _collisions.ClearBombKillQueue();
                         SpawnCannonDestructionFragments();
                         _state.BeginFinalDeathAnimation();
@@ -310,7 +342,8 @@ public sealed class GameManager
             _collisions.Resolve(GameConfig.Scoring.DamagePerHit);
             _entities.UpdateExplosions(simDtMain);
             _collisions.TickPendingBombKills();
-            if (!_state.IsGameOver && !_state.IsFinalDeathAnimating) _spawn.TrySpawn(clientWidth);
+            if (!_state.IsGameOver && !_state.IsFinalDeathAnimating)
+                _spawn.TrySpawn(clientWidth, Player.X + Player.Width * 0.5f);
         }
 
         _difficulty.Tick();
@@ -328,7 +361,7 @@ public sealed class GameManager
         int hh = hull.Height;
         float grav = GameConfig.Effects.CannonDestructionFragmentGravity;
 
-        EnsureFragmentHeadroom(GameConfig.Effects.CannonDestructionFragmentCount);
+        EnsureFragmentHeadroom(12 + 18 + 10); // grid + radial + micro-shards (actual spawn count).
 
         void AddFragment(float px, float py, float vx, float vy, int fw, int fh, int life, Color color, bool highlight) =>
             _entities.Fragments.Add(new Fragment(px, py, vx, vy, fw, fh, life, grav, color, highlight));
@@ -358,6 +391,7 @@ public sealed class GameManager
 
         // Omnidirectional spark cloud at cannon center (reads big on screen).
         int pCount = GameConfig.Effects.CannonDestructionParticleCount;
+        _entities.EnsureParticleCapacity(pCount);
         for (int i = 0; i < pCount; i++)
         {
             double ang = _random.NextDouble() * Math.PI * 2d;
@@ -374,7 +408,7 @@ public sealed class GameManager
             };
             float ox = cx + (float)(_random.NextDouble() * hw - hw * 0.5f);
             float oy = cy + (float)(_random.NextDouble() * hh - hh * 0.5f);
-            _entities.Particles.Add(new Particle(ox, oy, vx, vy, _random.Next(20, 38), pc));
+            _entities.Particles.Add(new Particle(ox, oy, vx, vy, _random.Next(20, 38), pc, size: _random.Next(3, 6)));
         }
 
         // Large hull shards: 4×3 grid across the whole cannon bounds.
@@ -456,13 +490,8 @@ public sealed class GameManager
         }
     }
 
-    private void EnsureFragmentHeadroom(int incoming)
-    {
-        int overflow = _entities.Fragments.Count + incoming - GameConfig.Effects.MaxActiveFragments;
-        if (overflow <= 0) return;
-        int remove = Math.Min(overflow, _entities.Fragments.Count);
-        _entities.Fragments.RemoveRange(0, remove);
-    }
+    private void EnsureFragmentHeadroom(int incoming) =>
+        _entities.EnsureFragmentCapacity(incoming);
 
     /// <summary>Applies life-lost transition effects and temporary pacing relief.</summary>
     private void HandleLifeLost()
@@ -535,7 +564,18 @@ public sealed class GameManager
     /// <summary>Delegates full-frame rendering to <see cref="RenderSystem"/>.</summary>
     public void Draw(Graphics g, int clientWidth, int playHeight, Font uiFont)
     {
-        _renderer.Draw(g, clientWidth, playHeight, uiFont, _state, _entities, Player, _leaderboard, ShowDebug, DebugFps);
+        _renderer.Draw(
+            g,
+            clientWidth,
+            playHeight,
+            uiFont,
+            _state,
+            _entities,
+            Player,
+            _leaderboard,
+            ShowDebug,
+            DebugFps,
+            _leaderboardHighlightName);
     }
 
     /// <summary>

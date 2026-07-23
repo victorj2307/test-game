@@ -48,7 +48,7 @@ internal static class DebugSelfTests
         var rng = new Random(42);
         var spawner = new SpawnSystem(state, entities, rng);
         for (int i = 0; i < 500; i++)
-            spawner.TrySpawn(480);
+            spawner.TrySpawn(480, 240f);
 
         Debug.Assert(entities.Bars.Count <= state.EffectiveMaxBarsOnScreen, "Spawner exceeded configured bar cap.");
     }

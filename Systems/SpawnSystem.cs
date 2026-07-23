@@ -4,10 +4,11 @@ using Game.Entities;
 
 namespace Game.Systems;
 
-/// <summary>Bar placement, cluster/lane patterns, and max-on-screen cap.</summary>
+/// <summary>Bar placement, cluster/lane patterns, max-on-screen cap, and player-reach filtering.</summary>
 public sealed class SpawnSystem
 {
     public const int BarWidth = GameConfig.Bars.Width;
+    private static int PlayerStepPixels => GameConfig.Bars.Width / 2;
 
     private readonly GameState _state;
     private readonly EntityManager _entities;
@@ -22,8 +23,9 @@ public sealed class SpawnSystem
 
     /// <summary>
     /// Attempts to spawn one primary bar (plus optional pattern extras) when countdown reaches zero.
+    /// <paramref name="playerCenterX"/> drives reachability filtering near the concurrent bar cap.
     /// </summary>
-    public void TrySpawn(int clientWidth)
+    public void TrySpawn(int clientWidth, float playerCenterX)
     {
         if (--_state.SpawnCountdown > 0) return;
 
@@ -39,7 +41,7 @@ public sealed class SpawnSystem
         int? forcedX = _state.NextSpawnLaneX;
         _state.NextSpawnLaneX = null;
 
-        if (TrySpawnOneBar(clientWidth, w, forcedX, out int placedX, out bool usedLane))
+        if (TrySpawnOneBar(clientWidth, w, forcedX, playerCenterX, out int placedX, out bool usedLane))
         {
             bool doCluster = _random.NextDouble() < GameConfig.Spawn.ClusterChance;
             if (doCluster)
@@ -51,7 +53,7 @@ public sealed class SpawnSystem
                     int nx = Math.Clamp(placedX + ox, 0, clientWidth - w);
                     BarType t = RollBarType();
                     int h = RollHeight(t);
-                    TryCreateBarAt(nx, w, h, t, clientWidth, setCountdown: false);
+                    TryCreateBarAt(nx, w, h, t, clientWidth, playerCenterX, setCountdown: false);
                 }
             }
             if (!usedLane && _random.NextDouble() < GameConfig.Spawn.LaneChance)
@@ -63,19 +65,19 @@ public sealed class SpawnSystem
 
         for (int attempt = 0; attempt < GameConfig.Spawn.PlacementAttempts; attempt++)
         {
-            int x = clientWidth <= w ? 0 : _random.Next(0, clientWidth - w + 1);
+            int x = PickCandidateX(clientWidth, w, playerCenterX);
             BarType t = RollBarType();
             int h = RollHeight(t);
-            if (TryCreateBarAt(x, w, h, t, clientWidth, setCountdown: true)) return;
+            if (TryCreateBarAt(x, w, h, t, clientWidth, playerCenterX, setCountdown: true)) return;
         }
         for (int x = 0; x <= clientWidth - w; x++)
         {
-            if (TryCreateBarAt(x, w, GameConfig.Spawn.FallbackHeight, BarType.Fast, clientWidth, setCountdown: true)) return;
+            if (TryCreateBarAt(x, w, GameConfig.Spawn.FallbackHeight, BarType.Fast, clientWidth, playerCenterX, setCountdown: true)) return;
         }
         _state.SpawnCountdown = GameConfig.Spawn.RetryFramesWhenNoFit;
     }
 
-    private bool TrySpawnOneBar(int clientWidth, int w, int? forcedX, out int placedX, out bool usedLane)
+    private bool TrySpawnOneBar(int clientWidth, int w, int? forcedX, float playerCenterX, out int placedX, out bool usedLane)
     {
         placedX = 0;
         usedLane = false;
@@ -83,7 +85,7 @@ public sealed class SpawnSystem
         {
             BarType t = RollBarType();
             int h = RollHeight(t);
-            if (TryCreateBarAt(fx, w, h, t, clientWidth, setCountdown: false))
+            if (TryCreateBarAt(fx, w, h, t, clientWidth, playerCenterX, setCountdown: false))
             {
                 placedX = fx;
                 usedLane = true;
@@ -92,10 +94,10 @@ public sealed class SpawnSystem
         }
         for (int attempt = 0; attempt < GameConfig.Spawn.PlacementAttempts; attempt++)
         {
-            int x = clientWidth <= w ? 0 : _random.Next(0, clientWidth - w + 1);
+            int x = PickCandidateX(clientWidth, w, playerCenterX);
             BarType t = RollBarType();
             int h = RollHeight(t);
-            if (TryCreateBarAt(x, w, h, t, clientWidth, setCountdown: false))
+            if (TryCreateBarAt(x, w, h, t, clientWidth, playerCenterX, setCountdown: false))
             {
                 placedX = x;
                 return true;
@@ -103,13 +105,28 @@ public sealed class SpawnSystem
         }
         for (int x = 0; x <= clientWidth - w; x++)
         {
-            if (TryCreateBarAt(x, w, GameConfig.Spawn.FallbackHeight, BarType.Fast, clientWidth, setCountdown: false))
+            if (TryCreateBarAt(x, w, GameConfig.Spawn.FallbackHeight, BarType.Fast, clientWidth, playerCenterX, setCountdown: false))
             {
                 placedX = x;
                 return true;
             }
         }
         return false;
+    }
+
+    private int PickCandidateX(int clientWidth, int w, float playerCenterX)
+    {
+        if (clientWidth <= w) return 0;
+        if (!IsUnderSpawnPressure())
+            return _random.Next(0, clientWidth - w + 1);
+
+        int half = ComputeReachHalfWidthPx(clientWidth);
+        int minX = (int)MathF.Floor(playerCenterX - half - w * 0.5f);
+        int maxX = (int)MathF.Ceiling(playerCenterX + half - w * 0.5f);
+        minX = Math.Clamp(minX, 0, clientWidth - w);
+        maxX = Math.Clamp(maxX, 0, clientWidth - w);
+        if (maxX < minX) return Math.Clamp((int)MathF.Round(playerCenterX - w * 0.5f), 0, clientWidth - w);
+        return _random.Next(minX, maxX + 1);
     }
 
     private BarType RollBarType()
@@ -134,7 +151,7 @@ public sealed class SpawnSystem
         _ => GameConfig.Bars.NormalSpeedScale,
     };
 
-    private bool TryCreateBarAt(int x, int w, int h, BarType type, int clientWidth, bool setCountdown)
+    private bool TryCreateBarAt(int x, int w, int h, BarType type, int clientWidth, float playerCenterX, bool setCountdown)
     {
         if (_entities.Bars.Count >= _state.EffectiveMaxBarsOnScreen) return false;
 
@@ -142,6 +159,7 @@ public sealed class SpawnSystem
         w = Math.Min(w, clientWidth);
         if (w < 1) return false;
         x = Math.Clamp(x, 0, Math.Max(0, clientWidth - w));
+        if (!IsReachablePlacement(x, w, clientWidth, playerCenterX)) return false;
         if (HasHorizontalSpacingConflict(x, w, _entities.Bars)) return false;
         int spawnY = ComputeSpawnY(x, w, h, _entities.Bars);
         var candidate = new Rectangle(x, spawnY, w, h);
@@ -169,6 +187,50 @@ public sealed class SpawnSystem
         var type = (PowerUpType)_random.Next(0, Enum.GetValues<PowerUpType>().Length);
         _entities.PowerUps.Add(new PowerUp(x, y, size, GameConfig.PowerUps.DropFallSpeed, type));
         _state.RegisterPowerUpDrop();
+    }
+
+    private bool IsUnderSpawnPressure() =>
+        _entities.Bars.Count >= Math.Max(0, _state.EffectiveMaxBarsOnScreen - GameConfig.Spawn.ReachabilityPressureSlotsFromCap);
+
+    /// <summary>
+    /// Reachable half-width ≈ fall time × player traverse speed × safety factor.
+    /// </summary>
+    internal int ComputeReachHalfWidthPx(int clientWidth)
+    {
+        int barSpeed = Math.Max(1, _state.GetEffectiveBarSpeed());
+        float fallSpeedPxPerSec = barSpeed * GameConfig.Ui.TargetFps;
+        float fallTimeSec = GameConfig.Spawn.ReachabilityFallDistancePx / fallSpeedPxPerSec;
+        int stepCooldownMs = Math.Max(1, _state.GetPlayerStepCooldownMs(GameConfig.Player.StepCooldownMs));
+        float playerPxPerSec = PlayerStepPixels * 1000f / stepCooldownMs;
+        int half = (int)MathF.Round(fallTimeSec * playerPxPerSec * GameConfig.Spawn.ReachabilitySafetyFactor);
+        half = Math.Clamp(half, GameConfig.Spawn.ReachabilityMinHalfWidth, GameConfig.Spawn.ReachabilityMaxHalfWidth);
+        return Math.Min(half, Math.Max(0, clientWidth / 2));
+    }
+
+    /// <summary>
+    /// Under pressure: placement must stay inside the player reach band.
+    /// Otherwise: allow wider placement, but reject opening a far lane opposite an existing far extreme.
+    /// </summary>
+    internal bool IsReachablePlacement(int x, int w, int clientWidth, float playerCenterX)
+    {
+        int half = ComputeReachHalfWidthPx(clientWidth);
+        float barCenter = x + w * 0.5f;
+        float dist = MathF.Abs(barCenter - playerCenterX);
+
+        if (IsUnderSpawnPressure())
+            return dist <= half;
+
+        if (dist <= half) return true;
+
+        bool candidateLeft = barCenter < playerCenterX;
+        foreach (var bar in _entities.Bars)
+        {
+            float bc = bar.X + bar.Width * 0.5f;
+            if (MathF.Abs(bc - playerCenterX) <= half) continue;
+            bool barLeft = bc < playerCenterX;
+            if (barLeft != candidateLeft) return false;
+        }
+        return true;
     }
 
     private static bool HasHorizontalSpacingConflict(int candidateX, int candidateWidth, List<Bar> bars)

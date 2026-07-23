@@ -18,12 +18,15 @@ public sealed class DifficultySystem
     }
 
     /// <summary>
-    /// Re-samples table-driven difficulty immediately and applies target values without smoothing delay.
+    /// Re-samples the time-based difficulty table after a destroy.
+    /// Uses smoothed blends (does not force-snap) so mid-run destroys do not spike difficulty.
     /// </summary>
-    public void SyncBarSpeedFromScore()
-    {
-        ApplyTable(force: true);
-    }
+    public void SyncDifficultyAfterDestroy() => ApplyTable(force: false);
+
+    /// <summary>
+    /// Immediately applies table targets (reset / dev-mode toggle). Prefer <see cref="SyncDifficultyAfterDestroy"/> during play.
+    /// </summary>
+    public void ApplyDifficultyImmediate() => ApplyTable(force: true);
 
     /// <summary>
     /// Runs one difficulty update tick and applies interpolated targets with smoothing.
@@ -121,5 +124,4 @@ public sealed class DifficultySystem
             next += target > current ? 1 : -1;
         return next;
     }
-
 }

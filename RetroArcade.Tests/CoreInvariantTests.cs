@@ -46,7 +46,7 @@ public sealed class CoreInvariantTests
         var spawner = new SpawnSystem(state, entities, new Random(42));
 
         for (int i = 0; i < 500; i++)
-            spawner.TrySpawn(480);
+            spawner.TrySpawn(480, 240f);
 
         Assert.IsTrue(
             entities.Bars.Count <= state.EffectiveMaxBarsOnScreen,

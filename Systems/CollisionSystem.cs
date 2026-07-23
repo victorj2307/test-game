@@ -104,6 +104,9 @@ public sealed class CollisionSystem
 
                 SpawnHitParticles(bRect, hitBarRect, bl.IsPiercingVisual);
                 SpawnBulletHitFragments(bRect, hitBarRect, bl.IsPiercingVisual);
+                int hx = (Math.Min(bRect.Left, hitBarRect.Left) + Math.Max(bRect.Right, hitBarRect.Right)) / 2;
+                int hy = (Math.Min(bRect.Top, hitBarRect.Top) + Math.Max(bRect.Bottom, hitBarRect.Bottom)) / 2;
+                _state.TriggerImpactFlash(hx, hy);
 
                 if (!bl.ConsumePierce())
                     removeBullet = true;
@@ -198,9 +201,13 @@ public sealed class CollisionSystem
         if (isSpecial)
             SpawnSpecialDestroyFeedback(bounds);
         _entities.Bars.RemoveAt(barIndex);
-        _state.RegisterBarDestroyed(isSpecial);
+        int points = _state.RegisterBarDestroyed(isSpecial);
+        float popupX = bounds.X + bounds.Width * 0.5f;
+        float popupY = Math.Max(8f, bounds.Y + bounds.Height * 0.35f);
+        _entities.EnsureScorePopupCapacity();
+        _entities.ScorePopups.Add(new ScorePopup(popupX, popupY, points, GameConfig.Effects.ScorePopupLifetimeFrames));
         _spawn.TrySpawnPowerUpAt(bounds);
-        _difficulty.SyncBarSpeedFromScore();
+        _difficulty.SyncDifficultyAfterDestroy();
     }
 
     private void ExplodeAt(int cx, int cy)
@@ -213,7 +220,7 @@ public sealed class CollisionSystem
         _entities.Explosions.Add(new ExplosionFx(cx, cy));
         _state.ShakeUntilTickMs = Environment.TickCount64 + GameConfig.Effects.BombExplosionShakeMs;
         _state.TriggerBombImpactFx(flashFrames: GameConfig.Effects.BombScreenFlashFrames, heavyShakeFrames: GameConfig.Effects.BombHeavyShakeFrames);
-        GameAudio.PlayHit();
+        GameAudio.PlayBomb();
         SpawnExplosionBurst(cx, cy);
 
         if (n == 0) return;
@@ -281,7 +288,7 @@ public sealed class CollisionSystem
             if (dx * dx + dy * dy > r2) continue;
             bar.ApplyDamage(GameConfig.Effects.BombSplashDamage);
             bar.RegisterHit();
-            SpawnHitParticles(new Rectangle(cx - 2, cy - 2, 4, 4), b, pierceVisual: false);
+            // Skip per-bar hit particles on splash — ring + center burst already sell the bomb.
             if (bar.IsDestroyed) DestroyBarAt(i, DestroyStyle.Bomb, cx, cy);
         }
 
@@ -300,8 +307,8 @@ public sealed class CollisionSystem
 
     private void SpawnBombFragments(Rectangle barBounds, float healthRatio, int explosionX, int explosionY)
     {
-        int count = _random.Next(4, 9);
-        EnsureFragmentCapacity(count);
+        int count = _random.Next(3, 7);
+        _entities.EnsureFragmentCapacity(count);
         Color baseColor = GetBarFragmentColor(healthRatio);
         for (int i = 0; i < count; i++)
         {
@@ -341,8 +348,8 @@ public sealed class CollisionSystem
     {
         int cx = (Math.Min(bullet.Left, bar.Left) + Math.Max(bullet.Right, bar.Right)) / 2;
         int cy = (Math.Min(bullet.Top, bar.Top) + Math.Max(bullet.Bottom, bar.Bottom)) / 2;
-        int count = _random.Next(2, 4);
-        EnsureFragmentCapacity(count);
+        int count = _random.Next(1, 3);
+        _entities.EnsureFragmentCapacity(count);
         for (int i = 0; i < count; i++)
         {
             float vx = (float)(_random.NextDouble() * 1.4 - 0.7);
@@ -355,8 +362,8 @@ public sealed class CollisionSystem
                 y: cy + (float)(_random.NextDouble() * 3 - 1.5),
                 vx: vx,
                 vy: vy,
-                width: _random.Next(2, 4),
-                height: _random.Next(2, 4),
+                width: _random.Next(3, 5),
+                height: _random.Next(3, 5),
                 lifetime: _random.Next(8, 14),
                 gravity: 0.14f,
                 baseColor: c));
@@ -368,47 +375,42 @@ public sealed class CollisionSystem
         int cx = bounds.Left + bounds.Width / 2;
         int cy = bounds.Top + Math.Max(1, bounds.Height / 2);
 
-        int particleCount = _random.Next(5, 8);
+        int particleCount = _random.Next(3, 6);
+        _entities.EnsureParticleCapacity(particleCount);
         for (int i = 0; i < particleCount; i++)
         {
             float vx = (float)(_random.NextDouble() * 5.4 - 2.7);
             float vy = (float)(-3.6 - _random.NextDouble() * 2.3);
             Color c = _random.Next(3) switch
             {
-                0 => Color.FromArgb(255, 255, 245, 140),
-                1 => Color.FromArgb(255, 255, 215, 95),
-                _ => Color.FromArgb(255, 255, 190, 70)
+                0 => Color.FromArgb(255, 255, 255, 200),
+                1 => Color.FromArgb(255, 255, 230, 120),
+                _ => Color.FromArgb(255, 255, 200, 80)
             };
-            _entities.Particles.Add(new Particle(cx, cy, vx, vy, _random.Next(12, 20), c));
+            int size = i == 0 ? 5 : _random.Next(3, 5);
+            _entities.Particles.Add(new Particle(cx, cy, vx, vy, _random.Next(14, 22), c, size));
         }
 
-        int fragmentCount = _random.Next(2, 5);
-        EnsureFragmentCapacity(fragmentCount);
+        // 1–2 large gold chunks so specials read clearly vs normal hits.
+        int fragmentCount = _random.Next(1, 3);
+        _entities.EnsureFragmentCapacity(fragmentCount);
         for (int i = 0; i < fragmentCount; i++)
         {
             float px = bounds.Left + (float)_random.NextDouble() * bounds.Width;
             float py = bounds.Top + (float)_random.NextDouble() * Math.Max(1, bounds.Height);
-            float vx = (float)(_random.NextDouble() * 2.4 - 1.2);
-            float vy = (float)(-2.6 - _random.NextDouble() * 1.6);
+            float vx = (float)(_random.NextDouble() * 2.8 - 1.4);
+            float vy = (float)(-3.0 - _random.NextDouble() * 1.8);
             _entities.Fragments.Add(new Fragment(
                 x: px,
                 y: py,
                 vx: vx,
                 vy: vy,
-                width: _random.Next(2, 5),
-                height: _random.Next(2, 5),
-                lifetime: _random.Next(9, 16),
+                width: _random.Next(6, 11),
+                height: _random.Next(6, 11),
+                lifetime: _random.Next(12, 20),
                 gravity: 0.15f,
-                baseColor: Color.FromArgb(235, 255, 210, 90)));
+                baseColor: Color.FromArgb(250, 255, 220, 100)));
         }
-    }
-
-    private void EnsureFragmentCapacity(int incoming)
-    {
-        int overflow = _entities.Fragments.Count + incoming - GameConfig.Effects.MaxActiveFragments;
-        if (overflow <= 0) return;
-        int remove = Math.Min(overflow, _entities.Fragments.Count);
-        _entities.Fragments.RemoveRange(0, remove);
     }
 
     private static Color GetBarFragmentColor(float healthRatio)
@@ -433,20 +435,23 @@ public sealed class CollisionSystem
 
     private void SpawnExplosionBurst(int cx, int cy)
     {
-        for (int i = 0; i < 32; i++)
+        int count = GameConfig.Effects.BombExplosionParticleCount;
+        _entities.EnsureParticleCapacity(count);
+        for (int i = 0; i < count; i++)
         {
             double ang = _random.NextDouble() * Math.PI * 2;
-            float sp = (float)(2.5 + _random.NextDouble() * 5.5);
+            float sp = (float)(3.5 + _random.NextDouble() * 6.5);
             float vx = MathF.Cos((float)ang) * sp;
             float vy = MathF.Sin((float)ang) * sp - 2f;
             Color c = _random.Next(4) switch
             {
-                0 => Color.FromArgb(255, 255, 220, 80),
-                1 => Color.FromArgb(255, 255, 140, 40),
-                2 => Color.FromArgb(255, 255, 90, 30),
-                _ => Color.FromArgb(255, 255, 200, 160)
+                0 => Color.FromArgb(255, 255, 240, 120),
+                1 => Color.FromArgb(255, 255, 160, 50),
+                2 => Color.FromArgb(255, 255, 100, 40),
+                _ => Color.FromArgb(255, 255, 220, 180)
             };
-            _entities.Particles.Add(new Particle(cx, cy, vx, vy, _random.Next(18, 34), c));
+            int size = _random.Next(4, 7);
+            _entities.Particles.Add(new Particle(cx, cy, vx, vy, _random.Next(18, 34), c, size));
         }
     }
 
@@ -454,7 +459,8 @@ public sealed class CollisionSystem
     {
         int cx = (Math.Min(bullet.Left, bar.Left) + Math.Max(bullet.Right, bar.Right)) / 2;
         int cy = (Math.Min(bullet.Top, bar.Top) + Math.Max(bullet.Bottom, bar.Bottom)) / 2;
-        int count = pierceVisual ? 6 : 4;
+        int count = pierceVisual ? 4 : 3;
+        _entities.EnsureParticleCapacity(count);
         for (int i = 0; i < count; i++)
         {
             float vx = (float)(_random.NextDouble() * 4 - 2);
@@ -462,12 +468,14 @@ public sealed class CollisionSystem
             Color c = pierceVisual
                 ? _random.Next(3) switch
                 {
-                    0 => Color.FromArgb(255, 255, 120, 255),
-                    1 => Color.FromArgb(255, 200, 80, 255),
-                    _ => Color.FromArgb(255, 180, 220, 255)
+                    0 => Color.FromArgb(255, 255, 140, 255),
+                    1 => Color.FromArgb(255, 220, 100, 255),
+                    _ => Color.FromArgb(255, 200, 230, 255)
                 }
                 : _random.Next(3) == 0 ? Color.Orange : Color.Gold;
-            _entities.Particles.Add(new Particle(cx, cy, vx, vy, _random.Next(12, 24), c));
+            // First spark is the bright core; others are slightly smaller trails.
+            int size = i == 0 ? 5 : _random.Next(3, 5);
+            _entities.Particles.Add(new Particle(cx, cy, vx, vy, _random.Next(12, 24), c, size));
         }
     }
 }

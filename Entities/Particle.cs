@@ -12,9 +12,11 @@ public sealed class Particle
     public float Vy { get; private set; }
     public int Lifetime { get; private set; }
     public Color Color { get; }
+    /// <summary>Draw size in pixels (default 2; larger for punchier hit/bomb sparks).</summary>
+    public int Size { get; }
 
     /// <summary>Constructs a short-lived spark particle.</summary>
-    public Particle(float x, float y, float vx, float vy, int lifetime, Color color)
+    public Particle(float x, float y, float vx, float vy, int lifetime, Color color, int size = 2)
     {
         X = x;
         Y = y;
@@ -22,6 +24,7 @@ public sealed class Particle
         Vy = vy;
         Lifetime = lifetime;
         Color = color;
+        Size = Math.Max(1, size);
     }
 
     /// <summary>Advances particle motion and decrements lifetime with delta scaling.</summary>
